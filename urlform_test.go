@@ -12,6 +12,7 @@ func TestClassify(t *testing.T) {
 		wantClass         Class
 		wantHost          string
 		wantBackslash     bool
+		wantTabOrNewline  bool
 		wantUnrecoverable bool
 	}{
 		{name: "empty after trimming", raw: "   ", wantClass: ClassEmpty},
@@ -19,10 +20,13 @@ func TestClassify(t *testing.T) {
 		{name: "digit-led first segment with colon is malformed", raw: "1a:b", wantClass: ClassMalformed},
 		{name: "absolute with host", raw: " https://NYAA.si/view/1 ", wantClass: ClassAbsolute, wantHost: "nyaa.si"},
 		{name: "non-http scheme still classifies absolute", raw: "ftp://animebytes.tv/x", wantClass: ClassAbsolute, wantHost: "animebytes.tv"},
-		{name: "scheme-relative path hides its host", raw: "https:/animebytes.tv/x", wantClass: ClassHiddenHost},
+		{name: "scheme-relative special form recovers its hidden host", raw: "https:/animebytes.tv/x", wantClass: ClassHiddenHost, wantHost: "animebytes.tv"},
+		{name: "zero-slash special form recovers its hidden host", raw: "https:animebytes.tv/x", wantClass: ClassHiddenHost, wantHost: "animebytes.tv"},
+		{name: "hidden-host recovery fails on an unparseable authority", raw: "https:/anime bytes@tv/x", wantClass: ClassHiddenHost, wantUnrecoverable: true},
 		{name: "opaque host-as-scheme hides its host", raw: "animebytes.tv:443/x", wantClass: ClassHiddenHost},
 		{name: "port-only authority hides its host", raw: "https://:443/x", wantClass: ClassHiddenHost},
 		{name: "javascript scheme is hidden-host, not absolute", raw: "javascript:alert(1)", wantClass: ClassHiddenHost},
+		{name: "non-special backslashes stay opaque, no fabricated host", raw: `non-special:\\opaque\x`, wantClass: ClassHiddenHost, wantBackslash: true},
 		{name: "protocol-relative with host", raw: "//animebytes.tv/x", wantClass: ClassProtocolRelative, wantHost: "animebytes.tv"},
 		{name: "three slashes are ambiguous protocol-relative without host", raw: "///animebytes.tv/x", wantClass: ClassProtocolRelative},
 		{name: "backslash authority canonicalizes to protocol-relative", raw: `\\animebytes.tv/x`, wantClass: ClassProtocolRelative, wantHost: "animebytes.tv", wantBackslash: true},
@@ -31,6 +35,10 @@ func TestClassify(t *testing.T) {
 		{name: "query-only form is schemeless without evidence", raw: "?x:y", wantClass: ClassSchemelessHost},
 		{name: "space before @ makes the authority reparse fail", raw: "foo bar@animebytes.tv/x", wantClass: ClassSchemelessHost, wantUnrecoverable: true},
 		{name: "rooted relative path", raw: "/torrents.php?id=1", wantClass: ClassRelative},
+		{name: "embedded tab is stripped before the parse", raw: "https://anime\tbytes.tv/x", wantClass: ClassAbsolute, wantHost: "animebytes.tv", wantTabOrNewline: true},
+		{name: "embedded newlines reassemble the scheme", raw: "ht\ntps://animebytes.tv/x", wantClass: ClassAbsolute, wantHost: "animebytes.tv", wantTabOrNewline: true},
+		{name: "edge C0 controls trim like the browser", raw: "\x00\x1fhttps://animebytes.tv/x\x1f ", wantClass: ClassAbsolute, wantHost: "animebytes.tv"},
+		{name: "interior non-tab C0 control stays malformed", raw: "https://anime\x01bytes.tv/x", wantClass: ClassMalformed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -43,6 +51,9 @@ func TestClassify(t *testing.T) {
 			}
 			if f.HasBackslash != tt.wantBackslash {
 				t.Errorf("HasBackslash = %v, want %v", f.HasBackslash, tt.wantBackslash)
+			}
+			if f.HasTabOrNewline != tt.wantTabOrNewline {
+				t.Errorf("HasTabOrNewline = %v, want %v", f.HasTabOrNewline, tt.wantTabOrNewline)
 			}
 			if f.HostUnrecoverable != tt.wantUnrecoverable {
 				t.Errorf("HostUnrecoverable = %v, want %v", f.HostUnrecoverable, tt.wantUnrecoverable)
