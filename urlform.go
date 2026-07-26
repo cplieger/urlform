@@ -1,6 +1,7 @@
 package urlform
 
 import (
+	"iter"
 	"net/url"
 	"strings"
 	"unicode"
@@ -341,4 +342,126 @@ func IsASCIIHost(host string) bool {
 		}
 	}
 	return true
+}
+
+// HostMatchesDomain reports whether host equals domain or is a real
+// dot-delimited subdomain of it. It is the matcher IsASCIIHost's documented
+// scenario leads to: a consumer that has gated untrusted host evidence on
+// IsASCIIHost then has to compare it against a known ASCII domain, and plain
+// suffix matching is wrong in three ways this closes.
+//
+//   - Suffix confusion: "evilnyaa.si" ends in "nyaa.si" without being under
+//     it, so the separating dot is required, not incidental.
+//   - Parent-domain spoofing: "nyaa.si.evil.example" contains the domain but
+//     is owned by evil.example, so the domain must be the SUFFIX, not a
+//     substring.
+//   - Empty DNS labels: a bare suffix test also accepts ".nyaa.si" (its
+//     leading dot) and "a..nyaa.si" (an inner one). No resolvable DNS name
+//     carries an empty label, so both forms are adversarial and every label
+//     of the subdomain prefix must be non-empty.
+//
+// It is fail-closed and total. An empty host or domain matches nothing (an
+// empty domain would otherwise match an empty host), and a domain that itself
+// carries an empty label matches nothing rather than lending its malformation
+// to the comparison. Comparison folds ASCII-only, for the same reason
+// Form.Host does: a full-Unicode fold has ASCII-producing mappings that would
+// launder a homograph host into a match. That fold is a convenience, NOT a
+// substitute for the gate - a non-ASCII host can never equal an ASCII domain
+// here, but callers still run IsASCIIHost first, because it is the check that
+// refuses the evidence outright instead of merely failing to match one
+// domain.
+//
+// It does NOT require an ASCII host, and deliberately so: a non-ASCII byte in
+// a SUBDOMAIN label ("\u00e9.nyaa.si" against "nyaa.si") is a truthful match,
+// since that host really is under the domain - the spoofing risk lives in the
+// region aligned with the domain, which is compared byte-wise against ASCII
+// and so cannot hold laundered bytes. Refusing non-ASCII evidence outright is
+// IsASCIIHost's separate, stricter job, which is why consumers run it first
+// rather than expecting this to imply it.
+//
+// Normalization beyond the ASCII fold stays the caller's: this compares the
+// host it is given, so a caller holding raw evidence trims its own
+// surrounding ASCII space and its own trailing root dot ("nyaa.si." does not
+// match "nyaa.si") before calling. Doing it here would mean applying
+// Unicode-aware trimming to a string whose non-ASCII bytes are exactly what
+// the caller's gate exists to see.
+func HostMatchesDomain(host, domain string) bool {
+	if host == "" || domain == "" {
+		return false
+	}
+	if hasEmptyLabel(domain) {
+		return false
+	}
+	host, domain = asciiLower(host), asciiLower(domain)
+	if host == domain {
+		return true
+	}
+	prefix, ok := strings.CutSuffix(host, "."+domain)
+	if !ok {
+		return false
+	}
+	return !hasEmptyLabel(prefix)
+}
+
+// hasEmptyLabel reports whether any dot-delimited label of s is empty,
+// including the degenerate empty string itself.
+func hasEmptyLabel(s string) bool {
+	if s == "" {
+		return true
+	}
+	for label := range strings.SplitSeq(s, ".") {
+		if label == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// RawQueryNames iterates the percent-decoded parameter NAMES of a raw query
+// string, in order, without consulting url.Values. It exists because the
+// parsed view can be evaded: url.ParseQuery (and therefore u.Query()) drops a
+// malformed pair WHOLESALE, so an unescaped semicolon deletes the pair it sits
+// in - "apikey=SECRET;foo=x" disappears from the parsed map while the bytes
+// stay in RawQuery for every outgoing request and every logged URL. A
+// consumer whose gate must not be evadable therefore needs the raw reading,
+// which is a strict superset of the parsed one:
+//
+//   - Pairs are split on BOTH '&' and ';' (the historic separator whose
+//     removal from url.ParseQuery is what creates the gap), empty fields
+//     skipped.
+//   - The name is the text before the first '=' (a pair with no '=' yields
+//     its whole field as a name, which is how a bare flag parameter reads).
+//   - Each name is percent-decoded, so an encoded spelling cannot hide from a
+//     literal comparison. A name whose escapes do not decode is yielded RAW
+//     rather than skipped, so a malformed pair still reaches the caller's
+//     predicate instead of vanishing the way the parsed view vanishes it.
+//
+// The iteration is judgment-free, like the Class facts: it reports names and
+// takes no view of them, because consumers need opposite fail directions over
+// the same walk - a credential-in-URL warning wants any suspicious name to
+// match (over-matching is safe), while a structural identity gate wants only
+// the name it recognizes (over-matching admits a URL it should refuse).
+//
+// The argument is a raw query WITHOUT its leading '?' - u.RawQuery's shape. A
+// '?' is a legal literal inside a query, so it is not trimmed: a caller
+// holding a whole URL takes u.RawQuery (or cuts at the first '?') rather than
+// passing the URL, exactly as IsASCIIHost takes a host and not a URL.
+func RawQueryNames(rawQuery string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for pair := range strings.FieldsFuncSeq(rawQuery, isQuerySeparator) {
+			name, _, _ := strings.Cut(pair, "=")
+			if decoded, err := url.QueryUnescape(name); err == nil {
+				name = decoded
+			}
+			if !yield(name) {
+				return
+			}
+		}
+	}
+}
+
+// isQuerySeparator reports whether r separates two query pairs under the raw
+// reading: '&' plus the historic ';' url.ParseQuery no longer accepts.
+func isQuerySeparator(r rune) bool {
+	return r == '&' || r == ';'
 }
