@@ -1,6 +1,9 @@
 package urlform
 
-import "testing"
+import (
+	"net/url"
+	"testing"
+)
 
 // TestClassify pins one example per structural class plus the
 // backslash-canonicalization and host-extraction facts the two consumer
@@ -137,5 +140,140 @@ func TestClassifyHomographHostsFailClosed(t *testing.T) {
 				t.Errorf("IsASCIIHost(%q) = true: the fold laundered the homograph bytes into ASCII", f.Host)
 			}
 		})
+	}
+}
+
+// TestHostMatchesDomain pins the three unsafe readings a plain suffix test
+// would accept (suffix confusion, parent-domain spoofing, empty DNS labels),
+// the fail-closed handling of a degenerate host or domain, and the ASCII-only
+// fold - including the homograph case, where the fold must NOT produce a match
+// the IsASCIIHost gate exists to refuse.
+func TestHostMatchesDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		host   string
+		domain string
+		want   bool
+	}{
+		{name: "exact match", host: "nyaa.si", domain: "nyaa.si", want: true},
+		{name: "real subdomain", host: "sukebei.nyaa.si", domain: "nyaa.si", want: true},
+		{name: "deep subdomain", host: "a.b.nyaa.si", domain: "nyaa.si", want: true},
+		{name: "ascii case folds", host: "SukeBei.NYAA.si", domain: "nyaa.si", want: true},
+		{name: "domain spelled in caps folds", host: "nyaa.si", domain: "NYAA.SI", want: true},
+
+		{name: "suffix confusion without the separating dot", host: "evilnyaa.si", domain: "nyaa.si"},
+		{name: "domain as a parent-spoofing prefix", host: "nyaa.si.evil.example", domain: "nyaa.si"},
+		{name: "domain as an interior substring", host: "a.nyaa.si.b.example", domain: "nyaa.si"},
+		{name: "leading empty label", host: ".nyaa.si", domain: "nyaa.si"},
+		{name: "inner empty label", host: "a..nyaa.si", domain: "nyaa.si"},
+		{name: "trailing root dot is the caller's to trim", host: "nyaa.si.", domain: "nyaa.si"},
+		{name: "surrounding space is the caller's to trim", host: " nyaa.si", domain: "nyaa.si"},
+
+		{name: "empty host", host: "", domain: "nyaa.si"},
+		{name: "empty domain", host: "nyaa.si", domain: ""},
+		{name: "both empty", host: "", domain: ""},
+		{name: "malformed domain with a leading dot, matched exactly", host: ".nyaa.si", domain: ".nyaa.si"},
+		{name: "malformed domain with an inner empty label", host: "a.nyaa..si", domain: "nyaa..si"},
+
+		{name: "U+0130 homograph host cannot fold into the domain", host: "an\u0130mebytes.tv", domain: "animebytes.tv"},
+		{name: "U+212A homograph host cannot fold into the domain", host: "rutrac\u212Aer.org", domain: "rutracker.org"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HostMatchesDomain(tt.host, tt.domain); got != tt.want {
+				t.Errorf("HostMatchesDomain(%q, %q) = %v, want %v", tt.host, tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRawQueryNames pins the raw reading's whole contract: the ';' split that
+// url.ParseQuery's wholesale pair drop creates the need for, percent-decoding,
+// the raw-name fallback for an undecodable escape, order preservation, and the
+// documented no-'?'-trimming boundary.
+func TestRawQueryNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+		want     []string
+	}{
+		{name: "empty query yields nothing", rawQuery: ""},
+		{name: "single pair", rawQuery: "id=1", want: []string{"id"}},
+		{name: "ampersand separated", rawQuery: "id=1&torrentid=2", want: []string{"id", "torrentid"}},
+		{
+			name:     "semicolon separated - the pair url.ParseQuery drops wholesale",
+			rawQuery: "apikey=SECRET;foo=x",
+			want:     []string{"apikey", "foo"},
+		},
+		{name: "mixed separators", rawQuery: "a=1;b=2&c=3", want: []string{"a", "b", "c"}},
+		{name: "empty fields skipped", rawQuery: "&&a=1;;&b=2&", want: []string{"a", "b"}},
+		{name: "bare flag parameter yields its whole field", rawQuery: "torrentid", want: []string{"torrentid"}},
+		{name: "value containing a separator does not leak into a name", rawQuery: "id=1;2", want: []string{"id", "2"}},
+		{name: "percent-encoded name decodes", rawQuery: "torrent%69d=1", want: []string{"torrentid"}},
+		{name: "plus in a name decodes to a space", rawQuery: "api+key=1", want: []string{"api key"}},
+		{
+			name:     "undecodable escape yields the raw name rather than vanishing",
+			rawQuery: "api%zzkey=1&ok=2",
+			want:     []string{"api%zzkey", "ok"},
+		},
+		{
+			name:     "leading '?' is part of the first name, not trimmed",
+			rawQuery: "?apikey=1&b=2",
+			want:     []string{"?apikey", "b"},
+		},
+		{name: "duplicate names are reported once each", rawQuery: "id=1&id=2", want: []string{"id", "id"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for name := range RawQueryNames(tt.rawQuery) {
+				got = append(got, name)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("RawQueryNames(%q) = %q, want %q", tt.rawQuery, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("RawQueryNames(%q) = %q, want %q", tt.rawQuery, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestRawQueryNamesStopsOnBreak pins the iterator contract a partial consumer
+// depends on: a caller that breaks out (every gate does, on its first match)
+// stops the walk instead of running it to completion.
+func TestRawQueryNamesStopsOnBreak(t *testing.T) {
+	visited := 0
+	for range RawQueryNames("a=1&b=2&c=3") {
+		visited++
+		break
+	}
+	if visited != 1 {
+		t.Errorf("visited %d names after break, want 1", visited)
+	}
+}
+
+// TestRawQueryNamesSupersetOfParsedView is the cross-check that states WHY the
+// raw walk exists: for a query whose pairs are all well-formed the two
+// readings agree, and for the semicolon-smuggled query the parsed view loses a
+// name the raw walk still reports.
+func TestRawQueryNamesSupersetOfParsedView(t *testing.T) {
+	const smuggled = "apikey=SECRET;foo=x"
+	parsed, err := url.ParseQuery(smuggled)
+	if err == nil {
+		if _, ok := parsed["apikey"]; ok {
+			t.Fatalf("url.ParseQuery(%q) kept apikey; the premise of the raw walk no longer holds", smuggled)
+		}
+	}
+	found := false
+	for name := range RawQueryNames(smuggled) {
+		if name == "apikey" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("RawQueryNames(%q) did not report apikey", smuggled)
 	}
 }

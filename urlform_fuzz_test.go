@@ -1,6 +1,7 @@
 package urlform
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -109,6 +110,105 @@ func FuzzClassify(f *testing.F) {
 			again.Scheme != fm.Scheme || again.Port != fm.Port || again.HasUserInfo != fm.HasUserInfo ||
 			again.HasBackslash != fm.HasBackslash || again.HostUnrecoverable != fm.HostUnrecoverable {
 			t.Errorf("Classify(%q) is not stable on its own Trimmed form %q", raw, fm.Trimmed)
+		}
+	})
+}
+
+// FuzzHostMatchesDomain fuzzes the fail-closed host-evidence matcher with the
+// security invariants it exists to hold, never a reimplementation of the rule:
+// a match implies the ASCII-folded host either equals the folded domain or ends
+// in "."+domain (so no substring or parent-domain spoof can match); a match
+// implies neither side carries an empty DNS label; a non-ASCII host never
+// matches an ASCII domain (the ASCII-only fold cannot launder a homograph into
+// an outright match, which is what keeps IsASCIIHost's gate meaningful - note
+// this is stated on the EQUALITY arm only, since a non-ASCII SUBDOMAIN label
+// under an ASCII domain is a truthful match, not a spoof); the relation is
+// reflexive exactly for a well-formed non-empty host; and an empty host or
+// domain never matches.
+func FuzzHostMatchesDomain(f *testing.F) {
+	f.Add("nyaa.si", "nyaa.si")
+	f.Add("sukebei.nyaa.si", "nyaa.si")
+	f.Add("evilnyaa.si", "nyaa.si")
+	f.Add("nyaa.si.evil.example", "nyaa.si")
+	f.Add(".nyaa.si", "nyaa.si")
+	f.Add("a..nyaa.si", "nyaa.si")
+	f.Add("an\u0130mebytes.tv", "animebytes.tv")
+	f.Add("rutrac\u212Aer.org", "rutracker.org")
+	f.Add("", "")
+
+	f.Fuzz(func(t *testing.T, host, domain string) {
+		got := HostMatchesDomain(host, domain)
+
+		if host == "" || domain == "" {
+			if got {
+				t.Fatalf("HostMatchesDomain(%q, %q) = true, want false for an empty side", host, domain)
+			}
+			return
+		}
+
+		if got {
+			lowHost, lowDomain := asciiLower(host), asciiLower(domain)
+			if lowHost != lowDomain && !strings.HasSuffix(lowHost, "."+lowDomain) {
+				t.Errorf("HostMatchesDomain(%q, %q) = true but the host is neither the domain nor under it", host, domain)
+			}
+			if hasEmptyLabel(host) || hasEmptyLabel(domain) {
+				t.Errorf("HostMatchesDomain(%q, %q) = true with an empty DNS label", host, domain)
+			}
+			if !IsASCIIHost(host) && IsASCIIHost(domain) && len(host) == len(domain) {
+				t.Errorf("HostMatchesDomain(%q, %q) = true: a non-ASCII host matched an ASCII domain outright", host, domain)
+			}
+		}
+
+		// Reflexivity holds exactly for a well-formed name: a value carrying an
+		// empty label is refused even against itself, so the malformation never
+		// lends itself to a match.
+		if want := !hasEmptyLabel(host); HostMatchesDomain(host, host) != want {
+			t.Errorf("HostMatchesDomain(%q, %q) = %v, want %v", host, host, !want, want)
+		}
+	})
+}
+
+// FuzzRawQueryNames fuzzes the raw-query name walk with the superset invariant
+// that is its whole reason to exist: every key url.ParseQuery recovers from a
+// query must also be reported by the raw walk (the raw reading is a strict
+// superset of the parsed one, so a gate built on it cannot be evaded by a
+// smuggled separator the parsed view drops). Plus the bounded-work invariants:
+// the walk terminates, yields no more names than the input could hold, and
+// never yields a name longer than the input.
+func FuzzRawQueryNames(f *testing.F) {
+	f.Add("")
+	f.Add("id=1")
+	f.Add("apikey=SECRET;foo=x")
+	f.Add("torrent%69d=1")
+	f.Add("api%zzkey=1&ok=2")
+	f.Add("&&a=1;;&b=2&")
+	f.Add("?apikey=1")
+
+	f.Fuzz(func(t *testing.T, rawQuery string) {
+		seen := make(map[string]bool)
+		count := 0
+		for name := range RawQueryNames(rawQuery) {
+			count++
+			seen[name] = true
+			if len(name) > len(rawQuery) {
+				t.Fatalf("RawQueryNames(%q) yielded a longer name %q", rawQuery, name)
+			}
+			if count > len(rawQuery)+1 {
+				t.Fatalf("RawQueryNames(%q) yielded more names than the input can hold", rawQuery)
+			}
+		}
+
+		parsed, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			// A query with an undecodable escape fails ParseQuery wholesale;
+			// the raw walk deliberately still reports its names, so there is
+			// no parsed set to compare against.
+			return
+		}
+		for key := range parsed {
+			if !seen[key] {
+				t.Errorf("RawQueryNames(%q) dropped key %q that url.ParseQuery recovered", rawQuery, key)
+			}
 		}
 	})
 }

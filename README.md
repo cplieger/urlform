@@ -47,7 +47,22 @@ if f.Host == "" || !urlform.IsASCIIHost(f.Host) {
 	// no host evidence, or homograph territory: fail closed
 	return nil, false
 }
-return domainTable[f.Host]
+for domain, tracker := range knownDomains {
+	if urlform.HostMatchesDomain(f.Host, domain) {
+		return tracker, true
+	}
+}
+return nil, false
+```
+
+Names of an untrusted raw query, without the evadable parsed view:
+
+```go
+for name := range urlform.RawQueryNames(u.RawQuery) {
+	if isCredentialParam(name) { // the caller's predicate, and its fail direction
+		return true
+	}
+}
 ```
 
 ## API
@@ -56,6 +71,8 @@ return domainTable[f.Host]
 - `Form`: the extracted facts: `Class`, `Trimmed` (preprocessed, emit-safe), `Host` (ASCII-only lowercase fold), `Scheme`, `Port` (extracted, deliberately not range-checked), `HasBackslash`, `HasTabOrNewline` (a whitespace-smuggling attempt was removed), `HasUserInfo`, `HostUnrecoverable`.
 - `Class`: `ClassEmpty`, `ClassMalformed`, `ClassAbsolute`, `ClassHiddenHost` (a scheme-bearing parse hiding host evidence; for the authority-carrying special schemes the browser's reading is recovered into the facts, so `https:/host/x` and `https:host/x` expose `host`, while `host:443/x` and `https://:443/x` stay evidence-free like the browser's own reading), `ClassProtocolRelative` (`//host/x` and the ambiguous `///x`), `ClassSchemelessHost` (`host/x`, where a browser navigates to `host`), `ClassRelative` (`/x`).
 - `IsASCIIHost(host string) bool`: the fail-closed companion gate. It reports whether every byte is ASCII, so a homograph host (Cyrillic lookalikes, fold-laundering U+0130/U+212A) never string-matches a canonical domain. Consumers that must accept international hosts convert punycode explicitly instead of relaxing the gate.
+- `HostMatchesDomain(host, domain string) bool`: the matcher the gate above leads to. Reports whether the host equals the domain or is a real dot-delimited subdomain of it, refusing the three readings a plain suffix test accepts: suffix confusion (`evilnyaa.si`), parent-domain spoofing (`nyaa.si.evil.example`), and empty DNS labels (`.nyaa.si`, `a..nyaa.si`). Fail-closed on an empty or empty-labelled argument; folds ASCII-only. Trimming surrounding space and the trailing root dot stays the caller's.
+- `RawQueryNames(rawQuery string) iter.Seq[string]`: the percent-decoded parameter names of a raw query (`u.RawQuery`'s shape, no leading `?`), split on both `&` and `;`. `url.ParseQuery` drops a malformed pair wholesale, so an unescaped semicolon deletes the pair it sits in while the bytes still ride every request and log line; this walk is the strict superset a gate can't be evaded on. Judgment-free: it reports names and takes no view of them, because consumers need opposite fail directions over the same walk.
 
 ## Design notes
 

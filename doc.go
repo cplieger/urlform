@@ -50,7 +50,16 @@
 // evidence gate hides what it cannot classify.
 //
 // Host evidence folds ASCII-only (a full-Unicode fold would launder
-// homograph bytes such as U+0130 or U+212A into ASCII), and IsASCIIHost is
+// homograph bytes such as U+0130 or U+212A into ASCII), IsASCIIHost is
 // the fail-closed companion gate for consumers matching hosts against known
-// ASCII domains.
+// ASCII domains, and HostMatchesDomain is the safe equals-or-subdomain
+// comparison that gate leads to.
+//
+// RawQueryNames sits beside those as the other raw-reading primitive: the
+// percent-decoded parameter names of a query string, split on both '&' and
+// ';', because url.ParseQuery drops a malformed pair wholesale and a gate
+// built on the parsed view can therefore be evaded by a smuggled separator
+// while the bytes still ride every request and log line. Like the Class
+// facts it is judgment-free - it reports names, and each consumer applies its
+// own predicate and fail direction.
 package urlform
