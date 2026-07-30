@@ -2,8 +2,10 @@ package urlform
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzClassify fuzzes the raw-URL structural classifier over untrusted
@@ -87,17 +89,46 @@ func FuzzClassify(f *testing.F) {
 			t.Errorf("HostUnrecoverable set on class %v, want only the authority-reparse classes", fm.Class)
 		}
 
+		// The normalized path reading: rooted or absent, free of the dot
+		// segments its whole job is to resolve, bounded by the input it came
+		// from (rooting adds at most one byte and decoding only shrinks), and
+		// absent entirely for the two no-facts classes.
+		np := fm.NormalizedPath()
+		if np != "" && np[0] != '/' {
+			t.Errorf("NormalizedPath = %q for %q, want it rooted or empty", np, raw)
+		}
+		for segment := range strings.SplitSeq(np, "/") {
+			if segment == "." || segment == ".." {
+				t.Errorf("NormalizedPath = %q for %q still carries a %q segment", np, raw, segment)
+			}
+		}
+		if len(np) > len(fm.Trimmed)+1 {
+			t.Errorf("NormalizedPath = %q (%d bytes) for trimmed %q (%d bytes), want a bounded reading", np, len(np), fm.Trimmed, len(fm.Trimmed))
+		}
+		if (fm.Class == ClassEmpty || fm.Class == ClassMalformed) && np != "" {
+			t.Errorf("NormalizedPath = %q for class %v, want empty (the class carries no facts)", np, fm.Class)
+		}
+
 		// The WHATWG tab/newline removal is position-independent: stripping
 		// the bytes from the raw input up front must yield identical facts,
-		// with only the smuggling flag differing.
-		stripped := Classify(strings.Map(dropTabOrNewline, raw))
-		if stripped.HasTabOrNewline {
-			t.Errorf("Classify of a tab/newline-free input set HasTabOrNewline for %q", raw)
-		}
-		if stripped.Class != fm.Class || stripped.Host != fm.Host || stripped.Trimmed != fm.Trimmed ||
-			stripped.Scheme != fm.Scheme || stripped.Port != fm.Port || stripped.HasUserInfo != fm.HasUserInfo ||
-			stripped.HasBackslash != fm.HasBackslash || stripped.HostUnrecoverable != fm.HostUnrecoverable {
-			t.Errorf("Classify(%q) diverges from its tab/newline-stripped form on facts other than HasTabOrNewline", raw)
+		// with only the smuggling flag differing. The law is stated over
+		// valid UTF-8 because the removal itself (strings.Map, in this
+		// package and in this test) also rewrites an invalid byte to U+FFFD:
+		// on invalid input the transform is not information-preserving, so
+		// its premise - that the two strings differ only in the removed
+		// bytes - does not hold. Every other invariant above still runs on
+		// invalid input.
+		if utf8.ValidString(raw) {
+			stripped := Classify(strings.Map(dropTabOrNewline, raw))
+			if stripped.HasTabOrNewline {
+				t.Errorf("Classify of a tab/newline-free input set HasTabOrNewline for %q", raw)
+			}
+			if stripped.Class != fm.Class || stripped.Host != fm.Host || stripped.Trimmed != fm.Trimmed ||
+				stripped.Scheme != fm.Scheme || stripped.Port != fm.Port || stripped.HasUserInfo != fm.HasUserInfo ||
+				stripped.HasBackslash != fm.HasBackslash || stripped.HostUnrecoverable != fm.HostUnrecoverable ||
+				stripped.NormalizedPath() != np {
+				t.Errorf("Classify(%q) diverges from its tab/newline-stripped form on facts other than HasTabOrNewline", raw)
+			}
 		}
 
 		// Stability: the preprocessed string re-classifies to the same
@@ -108,7 +139,8 @@ func FuzzClassify(f *testing.F) {
 		}
 		if again.Class != fm.Class || again.Host != fm.Host || again.Trimmed != fm.Trimmed ||
 			again.Scheme != fm.Scheme || again.Port != fm.Port || again.HasUserInfo != fm.HasUserInfo ||
-			again.HasBackslash != fm.HasBackslash || again.HostUnrecoverable != fm.HostUnrecoverable {
+			again.HasBackslash != fm.HasBackslash || again.HostUnrecoverable != fm.HostUnrecoverable ||
+			again.NormalizedPath() != np {
 			t.Errorf("Classify(%q) is not stable on its own Trimmed form %q", raw, fm.Trimmed)
 		}
 	})
@@ -208,6 +240,67 @@ func FuzzRawQueryNames(f *testing.F) {
 		for key := range parsed {
 			if !seen[key] {
 				t.Errorf("RawQueryNames(%q) dropped key %q that url.ParseQuery recovered", rawQuery, key)
+			}
+		}
+	})
+}
+
+// FuzzRawQueryPairs fuzzes the name-and-value walk with the two invariants
+// that make it substitutable for the parsed view: it reports exactly the names
+// the names-only walk reports (the two share one split-and-decode discipline,
+// so a gate keyed on one reading and a redaction pass keyed on the other can
+// never disagree about which parameters a URL carries), and every name/value
+// url.ParseQuery recovers is also reported here (the raw reading is a strict
+// superset of the parsed one, so a gate built on it cannot be evaded by a
+// smuggled separator the parsed view drops). Plus the bounded-work invariants:
+// the walk terminates and yields neither more pairs nor longer text than the
+// input can hold.
+func FuzzRawQueryPairs(f *testing.F) {
+	f.Add("")
+	f.Add("id=1")
+	f.Add("apikey=SECRET;foo=x")
+	f.Add("torrent%69d=%2Fview%2F1")
+	f.Add("api%zzkey=%zz")
+	f.Add("&&a=1;;&b=2&")
+	f.Add("q=a=b=c")
+	f.Add("torrentid")
+	f.Add("id=1&id=2")
+	f.Add("?apikey=1")
+
+	f.Fuzz(func(t *testing.T, rawQuery string) {
+		values := make(map[string][]string)
+		var names []string
+		for name, value := range RawQueryPairs(rawQuery) {
+			names = append(names, name)
+			values[name] = append(values[name], value)
+			if len(name) > len(rawQuery) || len(value) > len(rawQuery) {
+				t.Fatalf("RawQueryPairs(%q) yielded oversized pair (%q, %q)", rawQuery, name, value)
+			}
+			if len(names) > len(rawQuery)+1 {
+				t.Fatalf("RawQueryPairs(%q) yielded more pairs than the input can hold", rawQuery)
+			}
+		}
+
+		var wantNames []string
+		for name := range RawQueryNames(rawQuery) {
+			wantNames = append(wantNames, name)
+		}
+		if !slices.Equal(names, wantNames) {
+			t.Fatalf("RawQueryPairs(%q) names = %q, want RawQueryNames' %q", rawQuery, names, wantNames)
+		}
+
+		parsed, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			// A semicolon separator or an undecodable escape fails ParseQuery
+			// wholesale; the raw walk deliberately still reports those pairs,
+			// so there is no parsed set to compare against.
+			return
+		}
+		for key, parsedValues := range parsed {
+			for _, want := range parsedValues {
+				if !slices.Contains(values[key], want) {
+					t.Errorf("RawQueryPairs(%q) dropped %q=%q that url.ParseQuery recovered", rawQuery, key, want)
+				}
 			}
 		}
 	})

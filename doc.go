@@ -49,17 +49,29 @@
 // over the same facts — a publisher drops what it cannot vouch for, an
 // evidence gate hides what it cannot classify.
 //
+// Form.NormalizedPath is the derived reading beside those facts: the path a
+// browser resolves for the classified string, dot segments removed, for the
+// consumers that must decide whether two spellings name ONE destination
+// ("/beat/api/../ghost" leaves the namespace it appears to sit in). It
+// resolves via net/url's own RFC 3986 resolution, preserves repeated slashes
+// like the WHATWG parser (path.Clean, which collapses them, answers a
+// question about Go's router instead), and reads empty wherever no
+// browser-resolvable path exists.
+//
 // Host evidence folds ASCII-only (a full-Unicode fold would launder
-// homograph bytes such as U+0130 or U+212A into ASCII), IsASCIIHost is
-// the fail-closed companion gate for consumers matching hosts against known
-// ASCII domains, and HostMatchesDomain is the safe equals-or-subdomain
-// comparison that gate leads to.
+// homograph bytes such as U+0130, U+212A or U+017F into ASCII), FoldHostASCII
+// is that fold exported for consumers holding host evidence of their own,
+// IsASCIIHost is the fail-closed companion gate for consumers matching hosts
+// against known ASCII domains, and HostMatchesDomain is the safe
+// equals-or-subdomain comparison that gate leads to.
 //
 // RawQueryNames sits beside those as the other raw-reading primitive: the
 // percent-decoded parameter names of a query string, split on both '&' and
 // ';', because url.ParseQuery drops a malformed pair wholesale and a gate
 // built on the parsed view can therefore be evaded by a smuggled separator
-// while the bytes still ride every request and log line. Like the Class
-// facts it is judgment-free - it reports names, and each consumer applies its
-// own predicate and fail direction.
+// while the bytes still ride every request and log line. RawQueryPairs is the
+// same walk carrying each name's value, for the consumers whose predicate
+// reads it. Like the Class facts both are judgment-free - they report what the
+// wire carries, and each consumer applies its own predicate and fail
+// direction.
 package urlform
