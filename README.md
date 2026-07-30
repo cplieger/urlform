@@ -65,14 +65,36 @@ for name := range urlform.RawQueryNames(u.RawQuery) {
 }
 ```
 
+Same walk when the predicate needs the value too:
+
+```go
+for name, value := range urlform.RawQueryPairs(u.RawQuery) {
+	if isCredentialParam(name) && value != "" {
+		return redact(name) // a parameter carrying nothing is not a leak
+	}
+}
+```
+
+Two spellings of one destination, compared:
+
+```go
+f := urlform.Classify(raw)
+if p := f.NormalizedPath(); p == "" || !strings.HasPrefix(p, "/beat/") {
+	return errOutsideNamespace // "/beat/api/../ghost" resolves out of the namespace
+}
+```
+
 ## API
 
 - `Classify(raw string) Form`: total classification. Every input lands in exactly one class, never an error; the WHATWG input preprocessing and backslash canonicalization run first (see Design notes).
 - `Form`: the extracted facts: `Class`, `Trimmed` (preprocessed, emit-safe), `Host` (ASCII-only lowercase fold), `Scheme`, `Port` (extracted, deliberately not range-checked), `HasBackslash`, `HasTabOrNewline` (a whitespace-smuggling attempt was removed), `HasUserInfo`, `HostUnrecoverable`.
 - `Class`: `ClassEmpty`, `ClassMalformed`, `ClassAbsolute`, `ClassHiddenHost` (a scheme-bearing parse hiding host evidence; for the authority-carrying special schemes the browser's reading is recovered into the facts, so `https:/host/x` and `https:host/x` expose `host`, while `host:443/x` and `https://:443/x` stay evidence-free like the browser's own reading), `ClassProtocolRelative` (`//host/x` and the ambiguous `///x`), `ClassSchemelessHost` (`host/x`, where a browser navigates to `host`), `ClassRelative` (`/x`).
+- `(*Form).NormalizedPath() string`: the path a browser resolves for the classified string, dot segments removed (`/view/1/../2` reads `/view/2`), for comparing or displaying two spellings of one destination. Rooted; resolved by net/url's own RFC 3986 §5.2.4 resolution, so repeated slashes are preserved exactly as the WHATWG parser preserves them (a consumer wanting net/http's `ServeMux` rewrite is asking about Go's router, not the reader's browser). Empty when no browser-resolvable path exists: no facts at all, a failed authority reparse, an opaque-path reading (`javascript:alert(1)`), or a `//`-leading form whose authority region no parse separated.
 - `IsASCIIHost(host string) bool`: the fail-closed companion gate. It reports whether every byte is ASCII, so a homograph host (Cyrillic lookalikes, fold-laundering U+0130/U+212A) never string-matches a canonical domain. Consumers that must accept international hosts convert punycode explicitly instead of relaxing the gate.
+- `FoldHostASCII(host string) string`: the ASCII-only case fold `Form.Host` applies, exported for consumers holding host evidence from elsewhere (a configured domain, a header, a host parsed directly). Folds only A-Z, which is the point: `strings.ToLower` maps U+0130 to `i` and U+212A to `k`, and `strings.EqualFold` reads U+017F as `s`, so either one launders a homograph into a canonical ASCII domain before the gate above can reject it.
 - `HostMatchesDomain(host, domain string) bool`: the matcher the gate above leads to. Reports whether the host equals the domain or is a real dot-delimited subdomain of it, refusing the three readings a plain suffix test accepts: suffix confusion (`evilnyaa.si`), parent-domain spoofing (`nyaa.si.evil.example`), and empty DNS labels (`.nyaa.si`, `a..nyaa.si`). Fail-closed on an empty or empty-labelled argument; folds ASCII-only. Trimming surrounding space and the trailing root dot stays the caller's.
 - `RawQueryNames(rawQuery string) iter.Seq[string]`: the percent-decoded parameter names of a raw query (`u.RawQuery`'s shape, no leading `?`), split on both `&` and `;`. `url.ParseQuery` drops a malformed pair wholesale, so an unescaped semicolon deletes the pair it sits in while the bytes still ride every request and log line; this walk is the strict superset a gate can't be evaded on. Judgment-free: it reports names and takes no view of them, because consumers need opposite fail directions over the same walk.
+- `RawQueryPairs(rawQuery string) iter.Seq2[string, string]`: the same walk carrying each name's VALUE, for the consumers whose predicate reads it (a credential warning that must not fire on an empty parameter, a redaction pass locating the secret text). Name and value are percent-decoded independently, each falling back to its raw text, so one malformed half never hides the other.
 
 ## Design notes
 
@@ -80,6 +102,7 @@ for name := range urlform.RawQueryNames(u.RawQuery) {
 - **WHATWG input preprocessing.** Browsers delete embedded tab/newline wherever they appear and trim C0-control/space edges before parsing (the same hardening CPython adopted for CVE-2022-0391), so a string-level gate that skips this reads a different URL than the reader's browser will. `Classify` runs both steps first; `HasTabOrNewline` records a removed smuggling attempt, and `Trimmed` is already clean to emit. Edge trimming is deliberately widened to all Unicode whitespace (an NBSP-wrapped link still classifies; over-trimming errs fail-safe).
 - **ASCII-only host fold.** `strings.ToLower` has ASCII-producing mappings (U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE folds to `i`, U+212A KELVIN SIGN to `k`) that would launder a homograph host into a matchable ASCII domain before any gate sees it. `Host` folds only A-Z, and `IsASCIIHost` rejects what survives.
 - **Backslash canonicalization is read-only and spec-scoped.** The parsed facts describe the WHATWG reading (`/\host/x` classifies protocol-relative) for special-scheme and schemeless forms ahead of the query; for a non-special scheme a backslash is an ordinary character, and rewriting it would fabricate host evidence a browser never sees. `HasBackslash` lets a publisher that must emit the raw string reject it outright; the raw form is never rewritten.
+- **Dot-segment resolution reads the decoded path.** `NormalizedPath` resolves over the decoded path, which is what makes a percent-encoded dot segment (`/a/%2e%2e/b`) resolve like the literal one — matching the WHATWG parser, whose single- and double-dot segment definitions include the `%2e` spellings. The same decoding reads a percent-encoded slash as a separator, which the parser does not, so a caller whose comparison must keep `%2F` distinct compares the escaped path itself. That is the same boundary as the rest of the contract: the facts model the browser's structural reading, not percent-encoding normalization.
 - **Bounded and total.** Allocation is bounded and linear in the input, and unparseable input is a class (`ClassMalformed`), not an error.
 
 ## Disclaimer

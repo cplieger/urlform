@@ -75,6 +75,17 @@ type Form struct {
 	// package boundary. The nil-exactly-for-Empty/Malformed invariant is
 	// pinned by the in-package fuzz test.
 	parsed *url.URL
+	// path is the raw (dot-segments intact) path of the reading whose facts
+	// this Form reports: the canonicalized parse's for a form net/url reads
+	// hierarchically, and the AUTHORITY REPARSE's wherever that reparse is
+	// what supplied Host, since the main parse of a schemeless or
+	// hidden-host form reads the host as part of its path
+	// ("animebytes.tv/x"). Empty when no browser-resolvable path was
+	// extracted - no parse, a failed reparse, or an opaque-path reading.
+	// It stays private for the same reason parsed does: NormalizedPath
+	// reports the semantic reading, so which parse supplied it never
+	// crosses the package boundary.
+	path string
 	// Trimmed is the preprocessed raw string the classification read: edges
 	// trimmed and embedded ASCII tab/newline removed (the WHATWG input
 	// preprocessing, recorded by HasTabOrNewline), with backslashes NOT
@@ -174,6 +185,7 @@ func Classify(raw string) Form {
 	f.Scheme = parsed.Scheme
 	f.Port = parsed.Port()
 	f.HasUserInfo = parsed.User != nil
+	f.path = parsed.Path
 	// Hostname() drops the port and userinfo; asciiLower folds case for the
 	// byte-wise host predicates downstream while leaving non-ASCII homograph
 	// bytes intact for the fail-closed IsASCIIHost gates.
@@ -200,10 +212,15 @@ func Classify(raw string) Form {
 		rehost, rerr := url.Parse("//" + canonical)
 		if rerr != nil {
 			f.HostUnrecoverable = true
+			// The main parse read the host as part of its path, and the
+			// reparse that would have separated them failed: there is no
+			// extracted reading left to report a path from.
+			f.path = ""
 			return f
 		}
 		f.Host = asciiLower(rehost.Hostname())
 		f.HasUserInfo = rehost.User != nil
+		f.path = rehost.Path
 	}
 	return f
 }
@@ -226,11 +243,75 @@ func (f *Form) recoverHiddenAuthority(canonical string) {
 	rehost, err := url.Parse("//" + rest)
 	if err != nil {
 		f.HostUnrecoverable = true
+		f.path = ""
 		return
 	}
 	f.Host = asciiLower(rehost.Hostname())
 	f.Port = rehost.Port()
 	f.HasUserInfo = rehost.User != nil
+	f.path = rehost.Path
+}
+
+// NormalizedPath returns the browser's reading of the classified string's
+// path with its dot segments removed ("/view/1/../2" reads "/view/2"), for
+// comparison and display. It answers the question the raw string cannot: two
+// spellings of ONE destination must compare equal, so a gate deciding whether
+// a path is still inside a namespace ("/beat/api/../ghost" leaves the /beat
+// namespace every browser resolves it out of) and a display that must not
+// show a path pointing somewhere else both need the resolved reading rather
+// than the bytes.
+//
+// The removal is net/url's own RFC 3986 section 5.2.4 resolution
+// (ResolveReference against a rooted base), so the package carries no second
+// dot-segment implementation, and the result is always rooted. Repeated
+// slashes are PRESERVED ("/a//b" reads "/a//b") because the WHATWG parser
+// preserves them too; a consumer that wants net/http's ServeMux rewrite
+// (path.Clean, which also collapses them) is asking a different question -
+// about Go's router, not about the reader's browser - and keeps its own
+// helper for it.
+//
+// The reading is over the DECODED path, which is what makes a
+// percent-encoded dot segment ("/a/%2e%2e/b") resolve like the literal one,
+// matching the WHATWG parser (its single- and double-dot segment definitions
+// include the %2e spellings). The same decoding reads a percent-encoded
+// SLASH as a separator, which the WHATWG parser does NOT, so a caller whose
+// comparison must keep "%2F" distinct from a separator compares the escaped
+// path itself. That delta has the same shape as the package's other
+// documented boundary: the facts model the browser's structural reading, not
+// percent-encoding normalization.
+//
+// It is empty when the string carries no browser-resolvable path: ClassEmpty
+// and ClassMalformed (no facts at all), a failed authority reparse
+// (HostUnrecoverable), the hidden-host forms a browser reads as an OPAQUE
+// path ("javascript:alert(1)", "mailto:x") where no dot-segment removal
+// happens at all, and a ClassProtocolRelative form with no Host - the
+// three-or-more-slash sub-form, where net/url read the region a browser
+// reads as an authority as part of its path, so no parse this
+// classification ran separated the two and any path reported would carry
+// the browser's authority region inside it ("///a/../b" would read
+// "///b"). That is the same fail-closed reading Host takes there.
+//
+// A form carrying host evidence but no path reads "/", the browser's own
+// resolution of an authority-only URL ("https://nyaa.si"), while a host-less
+// form with no path (a query- or fragment-only reference such as "?x:y") reads
+// empty, because the path such a reference resolves against is a base this
+// classification never saw. Where an authority WAS separated but yielded no
+// host evidence ("https://:443/x", which a browser refuses outright for its
+// empty host), the path region is still genuinely the path and reads as one:
+// Host stays the fact a consumer gates on. Query and fragment are never part
+// of the reading.
+func (f *Form) NormalizedPath() string {
+	if f.Class == ClassProtocolRelative && f.Host == "" {
+		return ""
+	}
+	if f.path == "" {
+		if f.Host == "" {
+			return ""
+		}
+		return "/"
+	}
+	rooted := url.URL{Path: "/"}
+	return rooted.ResolveReference(&url.URL{Path: f.path}).Path
 }
 
 // trimEdges removes leading and trailing C0 controls and space (the WHATWG
@@ -318,7 +399,9 @@ func canonicalizeSlashes(s string) string {
 // LETTER I WITH DOT ABOVE -> 'i', U+212A KELVIN SIGN -> 'k') that would
 // launder a homograph host into ASCII before a consumer's fail-closed
 // ASCII-only host gates ever see the non-ASCII evidence they exist to
-// reject.
+// reject. It is the single implementation of that fold: FoldHostASCII is the
+// exported name for it, so a consumer's comparison and Form.Host can never
+// disagree about what folding a host means.
 func asciiLower(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'A' && r <= 'Z' {
@@ -326,6 +409,31 @@ func asciiLower(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// FoldHostASCII lowercases only the ASCII letters A-Z of host, leaving every
+// other byte untouched. It is the exported form of the fold Form.Host already
+// applies and HostMatchesDomain already compares with, for consumers holding
+// host evidence from somewhere else - a configured domain, a request header, a
+// host parsed by net/url directly - that must be compared against those facts
+// under the same rule.
+//
+// The ASCII-only restriction is the whole point, and the reason to call this
+// instead of strings.ToLower or strings.EqualFold: both have ASCII-PRODUCING
+// mappings for a case operation on a host. strings.ToLower folds U+0130 LATIN
+// CAPITAL LETTER I WITH DOT ABOVE to 'i' and U+212A KELVIN SIGN to 'k', and
+// strings.EqualFold additionally reads U+017F LATIN SMALL LETTER LONG S as
+// 's', so either one launders a homograph host into a canonical ASCII domain
+// BEFORE the fail-closed gate (IsASCIIHost) can see the non-ASCII bytes it
+// exists to reject. This fold cannot: a host that is not ASCII stays not
+// ASCII.
+//
+// It folds case and nothing else - no trimming, no IDNA/punycode mapping, no
+// percent-decoding (see the package docs for that boundary) - and it is not a
+// substitute for the gate. Callers still run IsASCIIHost first; the fold makes
+// host evidence safe to COMPARE case-insensitively, not safe to trust.
+func FoldHostASCII(host string) string {
+	return asciiLower(host)
 }
 
 // IsASCIIHost reports whether every byte of host is ASCII (below
@@ -446,18 +554,71 @@ func hasEmptyLabel(s string) bool {
 // '?' is a legal literal inside a query, so it is not trimmed: a caller
 // holding a whole URL takes u.RawQuery (or cuts at the first '?') rather than
 // passing the URL, exactly as IsASCIIHost takes a host and not a URL.
+//
+// RawQueryPairs is the same walk carrying each name's VALUE alongside, for the
+// consumers whose predicate reads it.
 func RawQueryNames(rawQuery string) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for pair := range strings.FieldsFuncSeq(rawQuery, isQuerySeparator) {
 			name, _, _ := strings.Cut(pair, "=")
-			if decoded, err := url.QueryUnescape(name); err == nil {
-				name = decoded
-			}
-			if !yield(name) {
+			if !yield(queryText(name)) {
 				return
 			}
 		}
 	}
+}
+
+// RawQueryPairs iterates the percent-decoded NAME and VALUE of each pair in a
+// raw query string, in order, under RawQueryNames' parsing discipline and for
+// the same reason: the parsed view can be evaded, so a gate that must not be
+// evadable reads the wire instead. It is the companion for the consumers whose
+// predicate needs the value too - a credential warning that must not fire on a
+// parameter carrying nothing, a redaction pass that has to locate the secret
+// text, an identity gate matching one expected id - and those are exactly the
+// consumers url.ParseQuery fails hardest: it drops a malformed pair WHOLESALE,
+// so the value disappears from the parsed map while the bytes stay in RawQuery
+// for every outgoing request and every logged URL.
+//
+//   - Pairs are split on BOTH '&' and ';' (the historic separator whose
+//     removal from url.ParseQuery creates the gap), empty fields skipped.
+//   - The name is the text before the first '=' and the value is everything
+//     after it, so a '=' inside a value is part of the value.
+//   - Name and value are percent-decoded INDEPENDENTLY, each falling back to
+//     its own raw text when its escapes do not decode, so one malformed half
+//     never hides the other from the caller's predicate the way the parsed
+//     view hides both.
+//   - A field with no '=' yields its whole text as the name and an empty
+//     value, which is how a bare flag parameter reads. "x" and "x=" are
+//     therefore one reading here; a caller that must tell them apart reads
+//     the raw field itself.
+//
+// The iteration is judgment-free, like RawQueryNames and the Class facts: it
+// reports pairs and takes no view of them, because consumers need opposite
+// fail directions over the same walk. The argument is a raw query WITHOUT its
+// leading '?' - u.RawQuery's shape; a '?' is a legal literal inside a query,
+// so it is not trimmed.
+func RawQueryPairs(rawQuery string) iter.Seq2[string, string] {
+	return func(yield func(string, string) bool) {
+		for pair := range strings.FieldsFuncSeq(rawQuery, isQuerySeparator) {
+			name, value, _ := strings.Cut(pair, "=")
+			if !yield(queryText(name), queryText(value)) {
+				return
+			}
+		}
+	}
+}
+
+// queryText percent-decodes one raw query name or value, yielding the RAW text
+// when the escapes do not decode rather than skipping it: a malformed pair must
+// still reach the caller's predicate instead of vanishing the way the parsed
+// view vanishes it. It is the single home of that decode rule, shared by the
+// names-only and name-and-value walks so the two can never drift on what a
+// pair reads as.
+func queryText(s string) string {
+	if decoded, err := url.QueryUnescape(s); err == nil {
+		return decoded
+	}
+	return s
 }
 
 // isQuerySeparator reports whether r separates two query pairs under the raw
