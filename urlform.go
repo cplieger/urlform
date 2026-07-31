@@ -393,22 +393,52 @@ func canonicalizeSlashes(s string) string {
 	return strings.ReplaceAll(s[:stop], `\`, "/") + s[stop:]
 }
 
+// asciiLowerByte is the package's ASCII-only case rule, defined on ONE byte:
+// A-Z map to lowercase, every other byte - including every byte of a
+// multi-byte or invalid UTF-8 sequence - is returned unchanged. It is the
+// single home of the rule, read by the string fold (asciiLower, and through it
+// Form.Host, FoldHostASCII and HostMatchesDomain) and by the equality
+// comparison (EqualASCIIFold), so no two of those spellings can disagree about
+// what folding ASCII means.
+func asciiLowerByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
 // asciiLower lowercases only the ASCII letters A-Z, leaving every other byte
 // untouched. Form.Host folds with this instead of strings.ToLower because
 // the full-Unicode fold has ASCII-producing mappings (U+0130 LATIN CAPITAL
 // LETTER I WITH DOT ABOVE -> 'i', U+212A KELVIN SIGN -> 'k') that would
 // launder a homograph host into ASCII before a consumer's fail-closed
 // ASCII-only host gates ever see the non-ASCII evidence they exist to
-// reject. It is the single implementation of that fold: FoldHostASCII is the
-// exported name for it, so a consumer's comparison and Form.Host can never
-// disagree about what folding a host means.
+// reject. It is the single string implementation of that fold: FoldHostASCII
+// is the exported name for it and EqualASCIIFold is the same rule applied to
+// a comparison, so a consumer's fold and Form.Host can never disagree.
+//
+// It walks BYTES rather than mapping runes (strings.Map) because the rule is
+// defined on bytes and rune mapping would rewrite an invalid UTF-8 byte to
+// U+FFFD: that both contradicts "every other byte untouched" and launders
+// distinct invalid host evidence onto one canonical spelling, in a fold whose
+// entire job is to leave non-ASCII evidence intact for the fail-closed gates.
+// Nothing is allocated when the string carries no ASCII uppercase.
 func asciiLower(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
+	var folded []byte
+	for i := range len(s) {
+		c := asciiLowerByte(s[i])
+		if c == s[i] {
+			continue
 		}
-		return r
-	}, s)
+		if folded == nil {
+			folded = []byte(s)
+		}
+		folded[i] = c
+	}
+	if folded == nil {
+		return s
+	}
+	return string(folded)
 }
 
 // FoldHostASCII lowercases only the ASCII letters A-Z of host, leaving every
@@ -434,6 +464,42 @@ func asciiLower(s string) string {
 // host evidence safe to COMPARE case-insensitively, not safe to trust.
 func FoldHostASCII(host string) string {
 	return asciiLower(host)
+}
+
+// EqualASCIIFold reports whether a and b are equal under ASCII-only case
+// folding: A-Z fold to a-z and nothing else does. It is FoldHostASCII's rule as
+// a comparison (both read the single byte rule, so the two can never disagree),
+// for the strings that are NOT hosts - a URL path token, a query parameter
+// name, any fixed ASCII protocol token an untrusted string is matched against.
+// A structural gate reading "/torrents.php" or "torrentid" out of an untrusted
+// URL is doing that comparison, and calling a host fold on a path would misname
+// the operation.
+//
+// The ASCII-only restriction is the whole point, and the reason not to reach
+// for strings.EqualFold: full Unicode simple folding has ASCII-PRODUCING
+// mappings, so it reads U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE as 'i',
+// U+212A KELVIN SIGN as 'k' and U+017F LATIN SMALL LETTER LONG S as 's'. Under
+// that fold a homograph spelling of a protocol token compares EQUAL to the
+// ASCII token - "torrent\u0130d" passes a strings.EqualFold check for
+// "torrentid" - which hands an evidence gate a match on bytes no server ever
+// routes and no operator ever reads as that token. This fold cannot: a string
+// that is not ASCII can never equal an ASCII token here.
+//
+// It folds case and nothing else: no trimming, no percent-decoding (see
+// RawQueryNames for that reading), no Unicode normalization. Length is compared
+// first because the fold is byte-length-preserving - unlike a Unicode fold,
+// where differing lengths can still fold equal, which is the same property that
+// makes strings.EqualFold's laundering possible.
+func EqualASCIIFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		if asciiLowerByte(a[i]) != asciiLowerByte(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // IsASCIIHost reports whether every byte of host is ASCII (below

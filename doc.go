@@ -63,7 +63,13 @@
 // is that fold exported for consumers holding host evidence of their own,
 // IsASCIIHost is the fail-closed companion gate for consumers matching hosts
 // against known ASCII domains, and HostMatchesDomain is the safe
-// equals-or-subdomain comparison that gate leads to.
+// equals-or-subdomain comparison that gate leads to. EqualASCIIFold is the
+// same rule as a comparison, for the ASCII protocol tokens that are NOT hosts
+// — a path token, a query parameter name — which a structural gate reads out
+// of an untrusted URL and where strings.EqualFold would let a homograph
+// spelling match. All four read one byte rule, so a consumer folding a host,
+// a path and a query name can never work from two ideas of what folding
+// ASCII means.
 //
 // RawQueryNames sits beside those as the other raw-reading primitive: the
 // percent-decoded parameter names of a query string, split on both '&' and

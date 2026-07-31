@@ -436,6 +436,15 @@ func TestFoldHostASCII(t *testing.T) {
 			want: "\u017Fukebei.nyaa.si",
 		},
 		{name: "non-ASCII with no ASCII case mapping is untouched", host: "\u00c9.nyaa.si", want: "\u00c9.nyaa.si"},
+		{
+			// The fold walks bytes, so an invalid UTF-8 byte survives as
+			// itself: a rune-mapping fold would rewrite it to U+FFFD, which
+			// both contradicts "every other byte untouched" and launders
+			// distinct invalid host evidence onto one canonical spelling.
+			name: "invalid UTF-8 byte survives as itself while the ASCII around it folds",
+			host: "NY\xffAA.SI",
+			want: "ny\xffaa.si",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -499,6 +508,142 @@ func TestFoldHostASCIIIsTheFoldClassifyApplies(t *testing.T) {
 				t.Errorf("HostMatchesDomain(%q, %q) = false on a pre-folded pair", host, host)
 			}
 		})
+	}
+}
+
+// TestEqualASCIIFold pins the exported comparison's contract: A-Z folds and
+// nothing else does, so every non-ASCII spelling of an ASCII protocol token
+// compares unequal. Length differs first for the multi-byte spellings, which is
+// exactly the difference from a Unicode fold - there differing byte lengths can
+// still fold equal.
+func TestEqualASCIIFold(t *testing.T) {
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{name: "both empty", want: true},
+		{name: "empty against non-empty", b: "torrentid"},
+		{name: "identical ASCII", a: "torrentid", b: "torrentid", want: true},
+		{name: "ASCII case differs", a: "TorrentID", b: "torrentid", want: true},
+		{name: "path token case differs", a: "/TORRENTS.PHP", b: "/torrents.php", want: true},
+		{name: "different tokens", a: "torrentid", b: "torrentids"},
+		{name: "same length, different letters", a: "torrentid", b: "torrentie"},
+		{name: "digits and punctuation are not case-folded", a: "torrent_1", b: "torrent-1"},
+		{name: "identical non-ASCII compares equal", a: "tor\u00e9nt", b: "tor\u00e9nt", want: true},
+		{name: "non-ASCII case is NOT folded", a: "TOR\u00c9NT", b: "tor\u00e9nt"},
+		{name: "identical invalid UTF-8 compares equal", a: "torrent\xffid", b: "torrent\xffid", want: true},
+		{name: "invalid UTF-8 never equals the replacement rune", a: "torrent\xff", b: "torrent\uFFFD"},
+		{name: "U+0130 never equals 'i'", a: "torrent\u0130d", b: "torrentid"},
+		{name: "U+212A never equals 'k'", a: "api\u212Aey", b: "apikey"},
+		{name: "U+017F never equals 's'", a: "/torrent\u017F.php", b: "/torrents.php"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EqualASCIIFold(tt.a, tt.b); got != tt.want {
+				t.Errorf("EqualASCIIFold(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+			// The relation is symmetric; a gate must not depend on which side
+			// holds the untrusted string.
+			if got := EqualASCIIFold(tt.b, tt.a); got != tt.want {
+				t.Errorf("EqualASCIIFold(%q, %q) = %v, want %v (asymmetric)", tt.b, tt.a, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEqualASCIIFoldRefusesUnicodeLaundering states the security reason this
+// comparison exists instead of a stdlib one: for each homograph spelling below,
+// the case-insensitive comparison a caller would otherwise reach for accepts it
+// as the ASCII protocol token, handing a structural gate a match on bytes no
+// server routes as that token. ASCII-only folding refuses all of them.
+//
+// The two stdlib operations launder DIFFERENT codepoints, which is why the
+// table names them per row rather than claiming one rule: strings.EqualFold
+// folds simple-fold orbits (U+212A -> 'k', U+017F -> 's') while
+// strings.ToLower folds simple lowercase mappings (U+0130 -> 'i', U+212A ->
+// 'k'). Each row is accepted by at least one of them, U+212A by both. The
+// assertions on those operations are premise checks: a case a Go release stops
+// laundering is stale, not fixed, and should be re-derived from the Unicode
+// data rather than deleted.
+func TestEqualASCIIFoldRefusesUnicodeLaundering(t *testing.T) {
+	tests := []struct {
+		name      string
+		homograph string // an untrusted spelling reaching a gate
+		token     string // the fixed ASCII token the gate compares against
+		equalFold bool   // strings.EqualFold accepts the spelling as the token
+		toLower   bool   // strings.ToLower makes the two compare equal
+	}{
+		{
+			name:      "U+0130 dotted capital I in a query name",
+			homograph: "torrent\u0130d",
+			token:     "torrentid",
+			toLower:   true,
+		},
+		{
+			name:      "U+212A kelvin sign in a query name",
+			homograph: "api\u212Aey",
+			token:     "apikey",
+			equalFold: true,
+			toLower:   true,
+		},
+		{
+			name:      "U+017F long s in a path token",
+			homograph: "/torrent\u017F.php",
+			token:     "/torrents.php",
+			equalFold: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if EqualASCIIFold(tt.homograph, tt.token) {
+				t.Errorf("EqualASCIIFold(%q, %q) = true: a homograph matched an ASCII protocol token", tt.homograph, tt.token)
+			}
+			if !tt.equalFold && !tt.toLower {
+				t.Fatalf("row %q claims no stdlib laundering, so it does not state a reason for this fold", tt.name)
+			}
+			if got := strings.EqualFold(tt.homograph, tt.token); got != tt.equalFold {
+				t.Errorf("strings.EqualFold(%q, %q) = %v, want %v; re-derive the row from the Unicode case data", tt.homograph, tt.token, got, tt.equalFold)
+			}
+			// staticcheck's SA6005 advises strings.EqualFold for exactly this
+			// expression; the row above is the counterexample - the two
+			// operations launder DIFFERENT codepoints, so substituting one for
+			// the other changes which homographs a caller's gate accepts. The
+			// pattern is asserted here precisely because callers write it.
+			//nolint:staticcheck // SA6005: the ToLower comparison is the behavior under test, not a style choice.
+			if got := strings.ToLower(tt.homograph) == strings.ToLower(tt.token); got != tt.toLower {
+				t.Errorf("strings.ToLower comparison of %q and %q = %v, want %v; re-derive the row from the Unicode case data", tt.homograph, tt.token, got, tt.toLower)
+			}
+		})
+	}
+}
+
+// TestEqualASCIIFoldIsTheFoldTheHostFactApplies pins the one-rule claim across
+// all three exported spellings and the classifier's own fact: the comparison
+// agrees with folding both sides, the host fold is that same fold, and
+// Form.Host is what the classifier applied - so a consumer comparing a path
+// token, a query name and a host can never be working from two different ideas
+// of what folding ASCII means. Invalid UTF-8 is included deliberately: it is
+// the only input class where a rune-mapping fold and a byte-wise comparison
+// could drift.
+func TestEqualASCIIFoldIsTheFoldTheHostFactApplies(t *testing.T) {
+	values := []string{
+		"", "torrentid", "TorrentID", "/torrents.php", "/TORRENTS.PHP",
+		"NYAA.si", "an\u0130mebytes.tv", "AN\u0130MEBYTES.TV", "api\u212Aey",
+		"\u017Fukebei.nyaa.si", "ny\xffaa.si", "ny\uFFFDaa.si",
+	}
+	for _, a := range values {
+		for _, b := range values {
+			if got, want := EqualASCIIFold(a, b), FoldHostASCII(a) == FoldHostASCII(b); got != want {
+				t.Errorf("EqualASCIIFold(%q, %q) = %v but folding both sides says %v", a, b, got, want)
+			}
+		}
+	}
+	for _, host := range []string{"NYAA.si", "AN\u0130MEBYTES.TV", "RUTRAC\u212AER.ORG"} {
+		if got := Classify("https://" + host + "/x").Host; !EqualASCIIFold(got, host) {
+			t.Errorf("EqualASCIIFold(Classify host %q, %q) = false; the fact and the comparison disagree", got, host)
+		}
 	}
 }
 
