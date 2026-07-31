@@ -305,3 +305,76 @@ func FuzzRawQueryPairs(f *testing.F) {
 		}
 	})
 }
+
+// FuzzEqualASCIIFold fuzzes the ASCII-only comparison with the laws that keep it
+// substitutable for the host fold and stricter than the stdlib one, never a
+// reimplementation of the byte rule: the comparison agrees with folding both
+// sides (FoldHostASCII), so the package's three ASCII-fold spellings can never
+// drift - the invalid-UTF-8 inputs matter most here, since that is the only
+// class where a byte-wise comparison and a rune-mapping fold could disagree; the
+// relation is reflexive and symmetric; a match implies the two strings differ
+// ONLY in ASCII-letter case, so no non-ASCII byte was ever folded and a match
+// implies equal byte length; and every match is also a strings.EqualFold match,
+// which states the security posture as a subset relation - this fold accepts a
+// strict subset of what Unicode folding accepts, so it can never be the looser
+// of the two on a homograph spelling of an ASCII protocol token.
+func FuzzEqualASCIIFold(f *testing.F) {
+	f.Add("", "")
+	f.Add("torrentid", "torrentid")
+	f.Add("TorrentID", "torrentid")
+	f.Add("/TORRENTS.PHP", "/torrents.php")
+	f.Add("torrent\u0130d", "torrentid")
+	f.Add("api\u212Aey", "apikey")
+	f.Add("/torrent\u017F.php", "/torrents.php")
+	f.Add("ny\xffaa.si", "ny\uFFFDaa.si")
+	f.Add("NY\xffAA.SI", "ny\xffaa.si")
+	f.Add("\u00c9.nyaa.si", "\u00e9.nyaa.si")
+
+	f.Fuzz(func(t *testing.T, a, b string) {
+		got := EqualASCIIFold(a, b)
+
+		if want := FoldHostASCII(a) == FoldHostASCII(b); got != want {
+			t.Fatalf("EqualASCIIFold(%q, %q) = %v but folding both sides says %v", a, b, got, want)
+		}
+		if !EqualASCIIFold(a, a) {
+			t.Errorf("EqualASCIIFold(%q, %q) = false, want reflexive", a, a)
+		}
+		if EqualASCIIFold(b, a) != got {
+			t.Errorf("EqualASCIIFold(%q, %q) is asymmetric", a, b)
+		}
+
+		if !got {
+			return
+		}
+		if len(a) != len(b) {
+			t.Fatalf("EqualASCIIFold(%q, %q) = true across differing byte lengths %d and %d", a, b, len(a), len(b))
+		}
+		for i := range len(a) {
+			if a[i] == b[i] {
+				continue
+			}
+			ca, cb := a[i], b[i]
+			if ca >= utf8.RuneSelf || cb >= utf8.RuneSelf {
+				t.Errorf("EqualASCIIFold(%q, %q) = true while byte %d differs on a non-ASCII byte (%#x vs %#x)", a, b, i, ca, cb)
+				continue
+			}
+			if ca|caseBit != cb|caseBit || !isASCIILetter(ca) || !isASCIILetter(cb) {
+				t.Errorf("EqualASCIIFold(%q, %q) = true while byte %d differs by more than ASCII case (%#x vs %#x)", a, b, i, ca, cb)
+			}
+		}
+		if !strings.EqualFold(a, b) {
+			t.Errorf("EqualASCIIFold(%q, %q) = true where strings.EqualFold = false; the ASCII fold must accept a strict subset", a, b)
+		}
+	})
+}
+
+// caseBit is the single bit that separates an ASCII letter's two cases, used by
+// the fuzz law to state "differs by ASCII case only" without restating the
+// package's fold.
+const caseBit = 'a' - 'A'
+
+// isASCIILetter reports whether c is an ASCII letter in either case.
+func isASCIILetter(c byte) bool {
+	lower := c | caseBit
+	return lower >= 'a' && lower <= 'z'
+}
