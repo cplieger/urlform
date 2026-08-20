@@ -17,7 +17,10 @@ import (
 // fold is ASCII-only by design, so non-ASCII homograph bytes survive to the
 // fail-closed IsASCIIHost gates downstream) and is empty for every class
 // that carries no extractable host evidence (Empty, Malformed, Relative)
-// while an absolute form always carries its host; HostUnrecoverable marks
+// while an absolute form always carries its host; the scheme prefix schemeEnd
+// delimits is one an ASCII fold and a Unicode fold agree on, which is what
+// licenses the ASCII-only special-scheme test in canonicalizeSlashes;
+// HostUnrecoverable marks
 // only the two authority-reparse classes (SchemelessHost, HiddenHost);
 // Trimmed carries neither surrounding whitespace nor any embedded
 // tab/newline (the WHATWG preprocessing); removing every ASCII tab/newline
@@ -74,6 +77,20 @@ func FuzzClassify(f *testing.F) {
 		}
 		if fm.Host != asciiLower(fm.Host) {
 			t.Errorf("Host = %q carries ASCII uppercase; the ASCII-only fold must apply", fm.Host)
+		}
+
+		// The scheme prefix schemeEnd delimits is pure ASCII, so the package's
+		// ASCII fold and a Unicode fold are the same operation on it - which is
+		// what makes canonicalizeSlashes' ASCII-only special-scheme test
+		// behavior-identical rather than merely safe today. Stated as the
+		// differential, so widening schemeEnd's alphabet to a byte a Unicode
+		// fold maps into ASCII (U+0130 -> 'i', U+212A -> 'k') fails here
+		// instead of silently changing which strings get their backslashes
+		// read as host evidence.
+		if end := schemeEnd(raw); end >= 0 {
+			if prefix := raw[:end]; asciiLower(prefix) != strings.ToLower(prefix) {
+				t.Errorf("schemeEnd(%q) delimited %q, where the ASCII fold and a Unicode fold disagree", raw, prefix)
+			}
 		}
 		switch fm.Class {
 		case ClassEmpty, ClassMalformed, ClassRelative:
