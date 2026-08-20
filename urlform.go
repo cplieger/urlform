@@ -379,8 +379,16 @@ func isAuthorityScheme(scheme string) bool {
 // are ordinary characters everywhere - rewriting them would fabricate host
 // evidence a browser never sees ("non-special:\\x" reads an opaque path,
 // not an authority).
+//
+// The scheme it tests is folded with the package's own ASCII rule
+// (asciiLower), not strings.ToLower, because a scheme is one of the fixed
+// ASCII protocol tokens EqualASCIIFold exists for and this test decides
+// whether a string's backslashes become host evidence. The two folds are the
+// same operation here rather than merely the same today: schemeEnd accepts
+// only ASCII bytes, so the prefix carries nothing a Unicode fold could
+// launder, and FuzzClassify pins that as a differential law.
 func canonicalizeSlashes(s string) string {
-	if end := schemeEnd(s); end >= 0 && !isSpecialScheme(strings.ToLower(s[:end])) {
+	if end := schemeEnd(s); end >= 0 && !isSpecialScheme(asciiLower(s[:end])) {
 		return s
 	}
 	stop := strings.IndexAny(s, "?#")
@@ -397,9 +405,9 @@ func canonicalizeSlashes(s string) string {
 // A-Z map to lowercase, every other byte - including every byte of a
 // multi-byte or invalid UTF-8 sequence - is returned unchanged. It is the
 // single home of the rule, read by the string fold (asciiLower, and through it
-// Form.Host, FoldHostASCII and HostMatchesDomain) and by the equality
-// comparison (EqualASCIIFold), so no two of those spellings can disagree about
-// what folding ASCII means.
+// Form.Host, FoldHostASCII, HostMatchesDomain and the special-scheme test in
+// canonicalizeSlashes) and by the equality comparison (EqualASCIIFold), so no
+// two of those spellings can disagree about what folding ASCII means.
 func asciiLowerByte(c byte) byte {
 	if c >= 'A' && c <= 'Z' {
 		return c + ('a' - 'A')
