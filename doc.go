@@ -69,7 +69,9 @@
 // of an untrusted URL and where strings.EqualFold would let a homograph
 // spelling match. All four read one byte rule, so a consumer folding a host,
 // a path and a query name can never work from two ideas of what folding
-// ASCII means.
+// ASCII means. That rule reads no Unicode table, so no Unicode revision can
+// change which bytes it folds; the package's only Unicode-table read is the
+// edge trim's whitespace set.
 //
 // RawQueryNames sits beside those as the other raw-reading primitive: the
 // percent-decoded parameter names of a query string, split on both '&' and

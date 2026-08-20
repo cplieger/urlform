@@ -321,6 +321,14 @@ func (f *Form) NormalizedPath() string {
 // over-trimming errs fail-safe for evidence gates where a WHATWG-strict edge
 // would return no facts at all). The delta from the spec is edge-only and
 // documented; embedded characters are never touched here.
+//
+// unicode.IsSpace is the package's ONLY Unicode-table read, which makes this
+// the one place a Unicode revision can change what the package does; every
+// case fold here is the ASCII byte rule instead (see asciiLowerByte), which no
+// revision can move. A future Unicode bump therefore needs the White_Space set
+// diffed and nothing else. Measured across the Unicode 15 to 17 jump (Go 1.26
+// to 1.27): the set is byte-identical at 25 runes, so that bump trimmed
+// exactly what it trimmed before.
 func trimEdges(s string) string {
 	return strings.TrimFunc(s, func(r rune) bool {
 		return r <= 0x20 || unicode.IsSpace(r)
@@ -408,6 +416,12 @@ func canonicalizeSlashes(s string) string {
 // Form.Host, FoldHostASCII, HostMatchesDomain and the special-scheme test in
 // canonicalizeSlashes) and by the equality comparison (EqualASCIIFold), so no
 // two of those spellings can disagree about what folding ASCII means.
+//
+// Spelling the rule out on bytes rather than delegating to strings.ToLower or
+// unicode.ToLower is also what makes it version-stable: it reads no Unicode
+// table, so no Unicode revision can change which bytes it folds. That matters
+// in a fold whose job is to NOT launder the codepoints a Unicode fold maps
+// into ASCII, because a revision is exactly what can add such a mapping.
 func asciiLowerByte(c byte) byte {
 	if c >= 'A' && c <= 'Z' {
 		return c + ('a' - 'A')

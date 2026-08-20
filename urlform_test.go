@@ -483,7 +483,8 @@ func TestFoldHostASCIIRefusesToLaunderHomographs(t *testing.T) {
 			// it, which is what makes this a security-relevant choice and not
 			// a stylistic one. A case a stdlib release stopped laundering is
 			// stale, not fixed - the assertion is the reason to keep folding
-			// ASCII-only.
+			// ASCII-only. Both premises re-verified on Unicode 17.0.0
+			// (Go 1.27).
 			if strings.ToLower(tt.host) != tt.canonical && !strings.EqualFold(tt.host, tt.canonical) {
 				t.Errorf("neither strings.ToLower nor strings.EqualFold folds %q onto %q; the premise of the ASCII-only fold is stale", tt.host, tt.canonical)
 			}
@@ -567,6 +568,13 @@ func TestEqualASCIIFold(t *testing.T) {
 // assertions on those operations are premise checks: a case a Go release stops
 // laundering is stale, not fixed, and should be re-derived from the Unicode
 // data rather than deleted.
+//
+// The rows were derived and last re-verified against Unicode 17.0.0 (Go 1.27),
+// where the laundering set is unchanged from Unicode 15: exactly two non-ASCII
+// runes lower to ASCII (U+0130 to 'i', U+212A to 'k') and exactly two are
+// EqualFold-equal to an ASCII letter (U+212A to 'k', U+017F to 's'). Only
+// these stdlib premises are version-bound - the fold under test reads no
+// Unicode table at all.
 func TestEqualASCIIFoldRefusesUnicodeLaundering(t *testing.T) {
 	tests := []struct {
 		name      string
