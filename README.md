@@ -65,7 +65,7 @@ for name := range urlform.RawQueryNames(u.RawQuery) {
 }
 ```
 
-Same iteration when the predicate needs the value too:
+Same walk when the predicate needs the value too:
 
 ```go
 for name, value := range urlform.RawQueryPairs(u.RawQuery) {
@@ -94,8 +94,8 @@ if p := f.NormalizedPath(); p == "" || !strings.HasPrefix(p, "/beat/") {
 - `FoldHostASCII(host string) string`: the ASCII-only case fold `Form.Host` applies, exported for consumers holding host evidence from elsewhere (a configured domain, a header, a host parsed directly). Folds only A-Z, which is the point: `strings.ToLower` maps U+0130 to `i` and U+212A to `k`, and `strings.EqualFold` reads U+017F as `s`, so either one launders a homograph into a canonical ASCII domain before the gate above can reject it.
 - `EqualASCIIFold(a, b string) bool`: the same rule as a comparison, for the ASCII protocol tokens that are **not** hosts (a URL path token, a query parameter name), which a structural gate reads out of an untrusted URL and where calling a host fold would misname the operation. `strings.EqualFold` accepts a U+212A KELVIN SIGN spelling of `apikey` and a U+017F LONG S spelling of `/torrents.php`, and a `strings.ToLower` comparison accepts a U+0130 DOTTED CAPITAL I spelling of `torrentid`: each hands a gate a match on bytes no server routes as that token. This comparison cannot: a string that is not ASCII never equals an ASCII token.
 - `HostMatchesDomain(host, domain string) bool`: the matcher the gate above leads to. Reports whether the host equals the domain or is a real dot-delimited subdomain of it, refusing the three readings a plain suffix test accepts: suffix confusion (`evilnyaa.si`), parent-domain spoofing (`nyaa.si.evil.example`), and empty DNS labels (`.nyaa.si`, `a..nyaa.si`). Fail-closed on an empty or empty-labelled argument; folds ASCII-only. Trimming surrounding space and the trailing root dot stays the caller's.
-- `RawQueryNames(rawQuery string) iter.Seq[string]`: the percent-decoded parameter names of a raw query (`u.RawQuery`'s shape, no leading `?`), split on both `&` and `;`. `url.ParseQuery` drops a malformed pair wholesale, so an unescaped semicolon deletes the pair it sits in while the bytes still ride every request and log line; this iteration is the strict superset a gate cannot be evaded on. Judgment-free: it reports names and takes no view of them, because consumers need opposite fail directions over the same iteration.
-- `RawQueryPairs(rawQuery string) iter.Seq2[string, string]`: the same iteration carrying each name's VALUE, for the consumers whose predicate reads it (a credential warning that must not fire on an empty parameter, a redaction pass locating the secret text). Name and value are percent-decoded independently, each falling back to its raw text, so one malformed half never hides the other.
+- `RawQueryNames(rawQuery string) iter.Seq[string]`: the percent-decoded parameter names of a raw query (`u.RawQuery`'s shape, no leading `?`), split on both `&` and `;`. `url.ParseQuery` drops a malformed pair wholesale, so an unescaped semicolon deletes the pair it sits in while the bytes still ride every request and log line; this walk is the strict superset a gate cannot be evaded on. Judgment-free: it reports names and takes no view of them, because consumers need opposite fail directions over the same walk.
+- `RawQueryPairs(rawQuery string) iter.Seq2[string, string]`: the same walk carrying each name's VALUE, for the consumers whose predicate reads it (a credential warning that must not fire on an empty parameter, a redaction pass locating the secret text). Name and value are percent-decoded independently, each falling back to its raw text, so one malformed half never hides the other.
 
 ## Design notes
 
