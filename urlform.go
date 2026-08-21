@@ -592,11 +592,21 @@ func HostMatchesDomain(host, domain string) bool {
 	if host == domain {
 		return true
 	}
-	prefix, ok := strings.CutSuffix(host, "."+domain)
-	if !ok {
+	// Deliberately not CutSuffix(host, "."+domain). That concatenation is the
+	// only allocation this function ever made: the runtime builds it in a stack
+	// buffer while the result fits 32 bytes and moves it to the heap above that,
+	// so a realistic long domain cost one allocation per call on a per-request
+	// path while a short one cost none. Comparing the suffix and then the
+	// separator byte answers the same question and allocates nothing at any
+	// length.
+	if !strings.HasSuffix(host, domain) {
 		return false
 	}
-	return !hasEmptyLabel(prefix)
+	cut := len(host) - len(domain)
+	if cut == 0 || host[cut-1] != '.' {
+		return false
+	}
+	return !hasEmptyLabel(host[:cut-1])
 }
 
 // hasEmptyLabel reports whether any dot-delimited label of s is empty,
