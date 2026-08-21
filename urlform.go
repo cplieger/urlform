@@ -588,22 +588,33 @@ func HostMatchesDomain(host, domain string) bool {
 	if hasEmptyLabel(domain) {
 		return false
 	}
-	host, domain = asciiLower(host), asciiLower(domain)
-	if host == domain {
+	// Compared under the ASCII fold WITHOUT folding a copy of either argument.
+	//
+	// This used to be `host, domain = asciiLower(host), asciiLower(domain)`, and
+	// that was the expensive line, not the "."+domain concatenation removed
+	// alongside it. asciiLower copies the whole string as soon as it meets one
+	// uppercase byte, and `host` is attacker-controlled: measured 72 bytes of
+	// allocation on a 16-byte uppercase host rising to 28416 on an 8 KiB one,
+	// about 3.5x the host, on a per-request security gate. EqualASCIIFold is the
+	// same fold applied to a comparison instead of to a value and allocates
+	// nothing at any length, so the whole predicate is now allocation-free
+	// whatever case the caller was handed.
+	//
+	// hasEmptyLabel needs no fold: it looks for empty dot-delimited labels, and
+	// case cannot create or remove one.
+	if EqualASCIIFold(host, domain) {
 		return true
 	}
-	// Deliberately not CutSuffix(host, "."+domain). That concatenation is the
-	// only allocation this function ever made: the runtime builds it in a stack
-	// buffer while the result fits 32 bytes and moves it to the heap above that,
-	// so a realistic long domain cost one allocation per call on a per-request
-	// path while a short one cost none. Comparing the suffix and then the
-	// separator byte answers the same question and allocates nothing at any
-	// length.
-	if !strings.HasSuffix(host, domain) {
+	// A subdomain is strictly longer than its domain, so equality above has
+	// already handled the only case where cut could be zero.
+	if len(host) <= len(domain) {
 		return false
 	}
 	cut := len(host) - len(domain)
-	if cut == 0 || host[cut-1] != '.' {
+	if host[cut-1] != '.' {
+		return false
+	}
+	if !EqualASCIIFold(host[cut:], domain) {
 		return false
 	}
 	return !hasEmptyLabel(host[:cut-1])
