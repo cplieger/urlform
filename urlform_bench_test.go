@@ -401,13 +401,14 @@ func TestRawQueryDecodeCostIsBoundedPerDecodedField(t *testing.T) {
 // strings.Split, or a []byte conversion goes red here rather than adding
 // invisible garbage to every request.
 //
-// HostMatchesDomain carries one measured caveat worth knowing before editing
-// these fixtures. It builds "."+domain to test the subdomain suffix, and the Go
-// runtime concatenates into a stack buffer only while the result fits 32 bytes;
-// above that the concat escapes to the heap and the function costs exactly one
-// allocation. Every real domain here is well under that, so the fixtures are
-// deliberately short: a longer domain in this table would fail the test for a
-// reason that is the runtime's, not the library's.
+// HostMatchesDomain used to carry a caveat here, and the caveat is why the
+// function changed. It tested the subdomain suffix with CutSuffix(host,
+// "."+domain), and the Go runtime keeps such a concatenation on the stack only
+// while the result fits 32 bytes; above that it escaped to the heap and the
+// matcher cost one allocation per call. So a short domain was free and a
+// realistic long one was not, on a per-request security gate. The concat is
+// gone (suffix compare, then the separator byte), and the length sweep below is
+// what stops it coming back.
 func TestHostPredicatesAreAllocationFree(t *testing.T) {
 	t.Run("IsASCIIHost", func(t *testing.T) {
 		cases := []struct {
@@ -490,6 +491,31 @@ func TestHostPredicatesAreAllocationFree(t *testing.T) {
 				t.Errorf("HostMatchesDomain(%q, %q) allocated %v times per run, want 0: "+
 					"the matcher compares the strings it is given and must not build a "+
 					"folded or split copy of either", tc.host, tc.domain, got)
+			}
+		}
+	})
+
+	// The length sweep is the half a fixed table cannot do. Any suffix test
+	// written as a concatenation is free at these first two sizes and allocates
+	// at the rest, so a table of realistic short domains would go on passing
+	// while every real caller paid. 4096 is far past any registrable name and is
+	// here to make the answer unambiguous rather than borderline.
+	t.Run("HostMatchesDomain_at_every_domain_length", func(t *testing.T) {
+		for _, n := range []int{8, 24, 31, 32, 33, 64, 256, 4096} {
+			domain := strings.Repeat("a", n-3) + ".si"
+			host := "sub." + domain
+			if !HostMatchesDomain(host, domain) {
+				t.Errorf("HostMatchesDomain(host, %d-byte domain) = false, want true: "+
+					"the fixture must match or the allocation reading below is vacuous", n)
+				continue
+			}
+			if got := testing.AllocsPerRun(100, func() {
+				_ = HostMatchesDomain(host, domain)
+			}); got != 0 {
+				t.Errorf("HostMatchesDomain(host, %d-byte domain) allocated %v times per "+
+					"run, want 0 at every length: a suffix test that concatenates is free "+
+					"below 32 bytes and costs one allocation above it, so a regression here "+
+					"is invisible to a short fixture and paid by every real caller", n, got)
 			}
 		}
 	})
