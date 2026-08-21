@@ -32,6 +32,19 @@ func TestClassify(t *testing.T) {
 		{name: "port-only authority hides its host", raw: "https://:443/x", wantClass: ClassHiddenHost},
 		{name: "javascript scheme is hidden-host, not absolute", raw: "javascript:alert(1)", wantClass: ClassHiddenHost},
 		{name: "non-special backslashes stay opaque, no fabricated host", raw: `non-special:\\opaque\x`, wantClass: ClassHiddenHost, wantBackslash: true},
+		{
+			// The scheme grammar is what decides whether a form's backslashes
+			// become host evidence, so this token spells every character class
+			// the grammar allows - letters in both cases, digits, "+", "-",
+			// "." - at both ends of each range. Read the alphabet any narrower
+			// and the form is taken for schemeless, its backslashes are
+			// rewritten to slashes, and the authority "//host" appears out of
+			// nothing a browser ever reads there.
+			name:          "non-special scheme spelled with the full grammar keeps its backslashes ordinary",
+			raw:           `azAZ09+-.:\\host/x`,
+			wantClass:     ClassHiddenHost,
+			wantBackslash: true,
+		},
 		{name: "protocol-relative with host", raw: "//animebytes.tv/x", wantClass: ClassProtocolRelative, wantHost: "animebytes.tv"},
 		{name: "three slashes are ambiguous protocol-relative without host", raw: "///animebytes.tv/x", wantClass: ClassProtocolRelative},
 		{name: "backslash authority canonicalizes to protocol-relative", raw: `\\animebytes.tv/x`, wantClass: ClassProtocolRelative, wantHost: "animebytes.tv", wantBackslash: true},
@@ -421,6 +434,11 @@ func TestFoldHostASCII(t *testing.T) {
 		{name: "already folded is unchanged", host: "animebytes.tv", want: "animebytes.tv"},
 		{name: "digits, dots and hyphens are untouched", host: "A1-b2.Example", want: "a1-b2.example"},
 		{
+			name: "every ASCII uppercase letter folds",
+			host: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			want: "abcdefghijklmnopqrstuvwxyz",
+		},
+		{
 			name: "U+0130 survives while the ASCII around it folds",
 			host: "AN\u0130MEBYTES.TV",
 			want: "an\u0130mebytes.tv",
@@ -652,6 +670,41 @@ func TestEqualASCIIFoldIsTheFoldTheHostFactApplies(t *testing.T) {
 		if got := Classify("https://" + host + "/x").Host; !EqualASCIIFold(got, host) {
 			t.Errorf("EqualASCIIFold(Classify host %q, %q) = false; the fact and the comparison disagree", got, host)
 		}
+	}
+}
+
+// TestIsASCIIHost pins the byte rule of the gate the fold cluster above keeps
+// deferring to: every byte below utf8.RuneSelf is ASCII, anything at or above
+// it is not, so a homograph host - a Cyrillic lookalike, the fold-laundering
+// U+0130 and U+212A, an invalid UTF-8 byte - is refused outright rather than
+// merely failing to match one domain. The two bytes either side of the
+// boundary get named rows of their own because the gate is a single
+// comparison, and which side 0x80 falls on is the whole posture: one step out
+// and a two-byte homograph reads as ASCII evidence a consumer may then match
+// against a canonical domain.
+func TestIsASCIIHost(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{name: "empty host is vacuously ASCII", want: true},
+		{name: "ascii domain", host: "nyaa.si", want: true},
+		{name: "ascii uppercase is still ascii", host: "NYAA.SI", want: true},
+		{name: "ascii digits and dots", host: "127.0.0.1", want: true},
+		{name: "the last ASCII byte is ASCII", host: "nyaa.si\x7f", want: true},
+		{name: "the first non-ASCII byte is not", host: "nyaa.si\x80"},
+		{name: "cyrillic lookalike", host: "\u0430nimebytes.tv"},
+		{name: "U+0130 dotted capital I", host: "an\u0130mebytes.tv"},
+		{name: "U+212A kelvin sign", host: "rutrac\u212Aer.org"},
+		{name: "invalid UTF-8 byte", host: "ny\xffaa.si"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsASCIIHost(tt.host); got != tt.want {
+				t.Errorf("IsASCIIHost(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
 	}
 }
 
