@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
   "lastUpdate": 1788308747079,
-  "repoUrl": "https://github.com/cplieger/ci",
+  "repoUrl": "https://github.com/cplieger/urlform",
   "entries": {
     "Benchmark": [
       {
@@ -453,14 +453,14 @@ window.BENCHMARK_DATA = {
             "email": "917744+cplieger@users.noreply.github.com"
           },
           "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
+            "name": "Christopher Plieger",
+            "username": "cplieger",
+            "email": "917744+cplieger@users.noreply.github.com"
           },
-          "id": "73fcb5e94e2f68f4366ffd27bd2af0247e0b054a",
-          "message": "chore(deps): update cplieger/ci digest to 77bb665 (#557)",
-          "timestamp": "2026-09-01T16:02:18Z",
-          "url": "https://github.com/cplieger/ci/commit/73fcb5e94e2f68f4366ffd27bd2af0247e0b054a"
+          "id": "225d0730864b9b8c36b6016c46a753e49deeb363",
+          "message": "chore(deps): update dependency go to v1.27.1",
+          "timestamp": "2026-09-01T21:11:42Z",
+          "url": "https://github.com/cplieger/urlform/commit/225d0730864b9b8c36b6016c46a753e49deeb363"
         },
         "date": 1788308746449,
         "tool": "customSmallerIsBetter",
