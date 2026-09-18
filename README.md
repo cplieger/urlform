@@ -1,8 +1,6 @@
 # urlform
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/urlform.svg)](https://pkg.go.dev/github.com/cplieger/urlform)
-[![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/urlform)](https://github.com/cplieger/urlform/blob/main/go.mod)
-[![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/urlform/badges/mutation.json)](https://github.com/cplieger/urlform/issues?q=label%3Agremlins-tracker)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/urlform.svg)](https://pkg.go.dev/github.com/cplieger/urlform) [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/urlform)](https://github.com/cplieger/urlform/blob/main/go.mod) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/urlform/badges/mutation.json)](https://github.com/cplieger/urlform/issues?q=label%3Agremlins-tracker)
 
 > Classify raw untrusted URL strings by structural form: the browser-vs-net/url parse quirks that decide whether a string really carries a host
 
