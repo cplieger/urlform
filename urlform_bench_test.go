@@ -7,46 +7,13 @@ import (
 	"testing"
 )
 
-// This file exists because urlform sits on a per-request path and SELLS a cost
-// bound that nothing in the repo verified. Every function here runs once per
-// untrusted URL a consumer publishes or gates, so a regression multiplies by
-// request volume rather than showing up as a single slow call.
-//
-// Three cost claims are gated below, two of them written down and one implicit:
-//
-//   - The README's Design notes state "Allocation is bounded and linear in the
-//     input". Bounded in WHAT is the load-bearing half: a classifier whose
-//     allocation COUNT grew with its input would let an attacker amplify GC
-//     pressure by sending more bytes, which is the amplification a bounded
-//     contract exists to refuse.
-//   - asciiLower's doc comment states "Nothing is allocated when the string
-//     carries no ASCII uppercase". That is the fast path an already-folded host
-//     takes on every request, and FoldHostASCII exports it.
-//   - RawQueryNames and RawQueryPairs exist to walk a raw query WITHOUT
-//     building the url.Values map url.ParseQuery allocates. Their doc comments
-//     argue correctness (the parsed view drops a malformed pair wholesale) and
-//     never state a cost, so the margin is measured here and charted beside the
-//     stdlib call they replace. A library whose reason to exist is a cheaper
-//     walk should not take the cheaper half on trust.
-//
-// Two kinds of check here, doing different jobs:
-//
-//   - The Test* functions GATE those claims. testing.AllocsPerRun is exact, so
-//     where the measured property is zero the assertion is `== 0`, never a
-//     threshold. Where the real property is BOUNDEDNESS rather than zero, the
-//     assertion compares the count at the smallest input against the count at
-//     the largest, because "cost does not grow with the attacker's payload" is
-//     the property under attack and a fixed number would pin an incidental one.
-//     Either way a refactor that starts copying goes red at merge time instead
-//     of being noticed later in a chart.
-//   - The Benchmark* functions feed the weekly benchmark tracker with a trend
-//     series. They are size-parameterised so an accidental quadratic walk shows
-//     up as a super-linear jump between sizes rather than as a uniform slowdown
-//     that reads as runner noise.
-//
-// Every benchmark stands alone. The weekly run passes -run='^$', so no test
-// function runs first and no fixture may depend on one; each builds what it
-// needs deterministically in setup, outside the timed loop.
+// The tests below gate the package's allocation claims (docs/contract.md
+// "bounded and linear in the input", asciiLower's zero-allocation fast path,
+// RawQueryNames/RawQueryPairs beating url.ParseQuery) with exact
+// testing.AllocsPerRun counts: == 0 where the claim is zero, smallest input
+// against largest where it is boundedness. Benchmarks are size-parameterised
+// so a quadratic walk shows as a super-linear jump, and each builds its own
+// fixture because the weekly run passes -run='^$'.
 
 // benchQuery builds a raw query of n pairs (u.RawQuery's shape, no leading '?')
 // whose names and values carry no percent escapes and no '+'. That is the shape

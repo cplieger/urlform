@@ -252,54 +252,14 @@ func (f *Form) recoverHiddenAuthority(canonical string) {
 	f.path = rehost.Path
 }
 
-// NormalizedPath returns the browser's reading of the classified string's
-// path with its dot segments removed ("/view/1/../2" reads "/view/2"), for
-// comparison and display. It answers the question the raw string cannot: two
-// spellings of ONE destination must compare equal, so a gate deciding whether
-// a path is still inside a namespace ("/beat/api/../ghost" leaves the /beat
-// namespace every browser resolves it out of) and a display that must not
-// show a path pointing somewhere else both need the resolved reading rather
-// than the bytes.
-//
-// The removal is net/url's own RFC 3986 section 5.2.4 resolution
-// (ResolveReference against a rooted base), so the package carries no second
-// dot-segment implementation, and the result is always rooted. Repeated
-// slashes are PRESERVED ("/a//b" reads "/a//b") because the WHATWG parser
-// preserves them too; a consumer that wants net/http's ServeMux rewrite
-// (path.Clean, which also collapses them) is asking a different question -
-// about Go's router, not about the reader's browser - and keeps its own
-// helper for it.
-//
-// The reading is over the DECODED path, which is what makes a
-// percent-encoded dot segment ("/a/%2e%2e/b") resolve like the literal one,
-// matching the WHATWG parser (its single- and double-dot segment definitions
-// include the %2e spellings). The same decoding reads a percent-encoded
-// SLASH as a separator, which the WHATWG parser does NOT, so a caller whose
-// comparison must keep "%2F" distinct from a separator compares the escaped
-// path itself. That delta has the same shape as the package's other
-// documented boundary: the facts model the browser's structural reading, not
-// percent-encoding normalization.
-//
-// It is empty when the string carries no browser-resolvable path: ClassEmpty
-// and ClassMalformed (no facts at all), a failed authority reparse
-// (HostUnrecoverable), the hidden-host forms a browser reads as an OPAQUE
-// path ("javascript:alert(1)", "mailto:x") where no dot-segment removal
-// happens at all, and a ClassProtocolRelative form with no Host - the
-// three-or-more-slash sub-form, where net/url read the region a browser
-// reads as an authority as part of its path, so no parse this
-// classification ran separated the two and any path reported would carry
-// the browser's authority region inside it ("///a/../b" would read
-// "///b"). That is the same fail-closed reading Host takes there.
-//
-// A form carrying host evidence but no path reads "/", the browser's own
-// resolution of an authority-only URL ("https://nyaa.si"), while a host-less
-// form with no path (a query- or fragment-only reference such as "?x:y") reads
-// empty, because the path such a reference resolves against is a base this
-// classification never saw. Where an authority WAS separated but yielded no
-// host evidence ("https://:443/x", which a browser refuses outright for its
-// empty host), the path region is still genuinely the path and reads as one:
-// Host stays the fact a consumer gates on. Query and fragment are never part
-// of the reading.
+// NormalizedPath returns the browser's reading of the path with dot segments
+// removed ("/view/1/../2" reads "/view/2"), via net/url's RFC 3986 §5.2.4
+// resolution over the DECODED path, so "%2e%2e" resolves like ".." and "%2F"
+// reads as a separator (compare the escaped path to keep it distinct).
+// Repeated slashes are preserved. A non-empty result is rooted; an
+// authority-only form reads "/". It is empty when there is no
+// browser-resolvable path: ClassEmpty, ClassMalformed, HostUnrecoverable, an
+// opaque path, a host-less ClassProtocolRelative form or a query-only reference.
 func (f *Form) NormalizedPath() string {
 	if f.Class == ClassProtocolRelative && f.Host == "" {
 		return ""
