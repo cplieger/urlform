@@ -124,7 +124,7 @@ urlform parses with `net/url` and then applies the browser readings described ab
 
 ## Contributing
 
-Issues and pull requests are welcome. See the [contributing guide](https://github.com/cplieger/.github/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
