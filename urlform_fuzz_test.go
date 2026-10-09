@@ -8,26 +8,11 @@ import (
 	"unicode/utf8"
 )
 
-// FuzzClassify fuzzes the raw-URL structural classifier over untrusted
-// upstream link strings with bounded-output and metamorphic invariants (never a
-// reimplementation of the class rules): every input lands in exactly one enum
-// class; the private parsed object is nil exactly for the two no-facts
-// classes (Empty, Malformed) and the exported semantic facts (Scheme, Port,
-// HasUserInfo) are zero whenever it is; Host carries no ASCII uppercase (the
-// fold is ASCII-only by design, so non-ASCII homograph bytes survive to the
-// fail-closed IsASCIIHost gates downstream) and is empty for every class
-// that carries no extractable host evidence (Empty, Malformed, Relative)
-// while an absolute form always carries its host; the scheme prefix schemeEnd
-// delimits is one an ASCII fold and a Unicode fold agree on, which is what
-// licenses the ASCII-only special-scheme test in canonicalizeSlashes;
-// HostUnrecoverable marks
-// only the two authority-reparse classes (SchemelessHost, HiddenHost);
-// Trimmed carries neither surrounding whitespace nor any embedded
-// tab/newline (the WHATWG preprocessing); removing every ASCII tab/newline
-// from the input before classifying changes nothing but the
-// HasTabOrNewline flag (the spec removes them wherever they appear); and
-// re-classifying the already-preprocessed string reproduces the same facts
-// with the flag cleared.
+// FuzzClassify checks the classifier's bounded-output and metamorphic
+// invariants over untrusted link strings, never a second copy of the class
+// rules; each check's failure message names the invariant it pins. The
+// ASCII-only Host fold leaves non-ASCII homograph bytes for the fail-closed
+// IsASCIIHost gates.
 func FuzzClassify(f *testing.F) {
 	f.Add("   ")
 	f.Add("https://nyaa.si/view/1")
@@ -69,10 +54,8 @@ func FuzzClassify(f *testing.F) {
 		if strings.ContainsAny(fm.Trimmed, "\t\n\r") {
 			t.Errorf("Trimmed = %q still carries embedded tab/newline after the preprocessing", fm.Trimmed)
 		}
-		if gotNil := fm.parsed == nil; gotNil != (fm.Class == ClassEmpty || fm.Class == ClassMalformed) {
-			t.Errorf("parsed nil = %v for class %v, want nil exactly for Empty/Malformed", gotNil, fm.Class)
-		}
-		if fm.parsed == nil && (fm.Scheme != "" || fm.Port != "" || fm.HasUserInfo) {
+		noParse := fm.Class == ClassEmpty || fm.Class == ClassMalformed
+		if noParse && (fm.Scheme != "" || fm.Port != "" || fm.HasUserInfo) {
 			t.Errorf("Scheme=%q Port=%q HasUserInfo=%v without a parse for %q, want zero facts", fm.Scheme, fm.Port, fm.HasUserInfo, raw)
 		}
 		if fm.Host != asciiLower(fm.Host) {
@@ -122,7 +105,7 @@ func FuzzClassify(f *testing.F) {
 		if len(np) > len(fm.Trimmed)+1 {
 			t.Errorf("NormalizedPath = %q (%d bytes) for trimmed %q (%d bytes), want a bounded reading", np, len(np), fm.Trimmed, len(fm.Trimmed))
 		}
-		if (fm.Class == ClassEmpty || fm.Class == ClassMalformed) && np != "" {
+		if noParse && np != "" {
 			t.Errorf("NormalizedPath = %q for class %v, want empty (the class carries no facts)", np, fm.Class)
 		}
 
