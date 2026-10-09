@@ -7,10 +7,10 @@ import (
 )
 
 // fixtureCase is one row of testdata/whatwg-fixtures.json: an input plus the
-// expected urlform facts, with the browser truth (wpt) and derivation notes
-// carried as provenance. Expectations are hand-vetted against the WHATWG
-// reading, never regenerated from the implementation - on mismatch,
-// re-derive from the spec before touching the row.
+// expected urlform facts and the browser truth (wpt) printed on failure. The
+// rows' source and note keys are provenance for whoever re-derives a row and
+// are not decoded. Expectations are hand-vetted against the WHATWG reading,
+// never regenerated from the implementation.
 type fixtureCase struct {
 	Name              string `json:"name"`
 	Input             string `json:"input"`
@@ -19,8 +19,6 @@ type fixtureCase struct {
 	Scheme            string `json:"scheme"`
 	Port              string `json:"port"`
 	WPT               string `json:"wpt"`
-	Source            string `json:"source"`
-	Note              string `json:"note"`
 	HasUserInfo       bool   `json:"hasUserInfo"`
 	HasBackslash      bool   `json:"hasBackslash"`
 	HasTabOrNewline   bool   `json:"hasTabOrNewline"`
@@ -38,29 +36,13 @@ var fixtureClasses = map[string]Class{
 	"relative":          ClassRelative,
 }
 
-// TestClassifyWHATWGFixtures pins the covered divergence set against the
-// curated conformance corpus (WPT-derived rows plus hand-derived address-bar
-// and model-boundary rows). This is the external oracle the in-package
-// fuzz/property tests cannot provide: they check the classifier against
-// itself, this table checks it against the browser's documented reading.
-//
-// MAINTENANCE (for future agents): the corpus is a snapshot, and the WHATWG
-// URL Standard moves (rarely). From time to time - a periodic review, or any
-// session touching Classify - re-check the upstream sources for drift
-// against the covered set: the spec's basic-parser preprocessing and scheme
-// states (https://url.spec.whatwg.org) and fresh relevant cases in
-// https://github.com/web-platform-tests/wpt url/resources/urltestdata.json
-// (the provenance field in testdata/whatwg-fixtures.json records the commit
-// this corpus was curated from). If a covered behavior changed or a new
-// divergence family appeared, extend the corpus and re-derive expectations
-// from the spec - never from the implementation. Adopting a conformant
-// engine instead was evaluated and skipped (2026-07 judgement run, P2:
-// nlnwa/whatwg-url - low drift risk did not justify 3 runtime deps against
-// the stdlib-only contract); revisit only if a consumer needs full
-// conformance. An additive IDNA-normalized host fact (P3, for spec-mapped
-// lookalikes such as a fullwidth dot) was likewise skipped - revisit only
-// when a consumer needs browser-destination equivalence for more than
-// annotation accuracy (raw evidence + IsASCIIHost already fail closed).
+// TestClassifyWHATWGFixtures checks Classify against the curated conformance
+// corpus, the external oracle the fuzz and property tests cannot provide. The
+// corpus is a snapshot: re-check the WHATWG URL Standard
+// (https://url.spec.whatwg.org) and WPT's url/resources/urltestdata.json
+// (https://github.com/web-platform-tests/wpt) against the commit the corpus
+// provenance field records, and re-derive any changed expectation from the
+// spec, never from the implementation.
 func TestClassifyWHATWGFixtures(t *testing.T) {
 	raw, err := os.ReadFile("testdata/whatwg-fixtures.json")
 	if err != nil {

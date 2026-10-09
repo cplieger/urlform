@@ -67,14 +67,6 @@ const (
 // while an evidence gate hides what it cannot classify
 // (extract-evidence-or-hide). Fields are ordered for govet fieldalignment.
 type Form struct {
-	// parsed is the canonicalized parse result (backslashes read as slashes,
-	// like the WHATWG parser); nil for ClassEmpty and ClassMalformed. It
-	// stays private to the classifier: consumers read the semantic facts
-	// below (Scheme, Host, Port, HasUserInfo), never the parser
-	// representation, so a parser/canonicalization change cannot cross the
-	// package boundary. The nil-exactly-for-Empty/Malformed invariant is
-	// pinned by the in-package fuzz test.
-	parsed *url.URL
 	// path is the raw (dot-segments intact) path of the reading whose facts
 	// this Form reports: the canonicalized parse's for a form net/url reads
 	// hierarchically, and the AUTHORITY REPARSE's wherever that reparse is
@@ -82,9 +74,8 @@ type Form struct {
 	// hidden-host form reads the host as part of its path
 	// ("animebytes.tv/x"). Empty when no browser-resolvable path was
 	// extracted - no parse, a failed reparse, or an opaque-path reading.
-	// It stays private for the same reason parsed does: NormalizedPath
-	// reports the semantic reading, so which parse supplied it never
-	// crosses the package boundary.
+	// It stays private: NormalizedPath reports the semantic reading, so
+	// which parse supplied it never crosses the package boundary.
 	path string
 	// Trimmed is the preprocessed raw string the classification read: edges
 	// trimmed and embedded ASCII tab/newline removed (the WHATWG input
@@ -181,7 +172,6 @@ func Classify(raw string) Form {
 		f.Class = ClassMalformed
 		return f
 	}
-	f.parsed = parsed
 	f.Scheme = parsed.Scheme
 	f.Port = parsed.Port()
 	f.HasUserInfo = parsed.User != nil
