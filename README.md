@@ -1,5 +1,8 @@
 # urlform
 
+> Moved to [`github.com/cplieger/go/urlform`](https://github.com/cplieger/go/tree/dev/urlform).
+> **Archived 2026-11-06. This repository is read-only. The published Go module stays available.**
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/cplieger/urlform.svg)](https://pkg.go.dev/github.com/cplieger/urlform) [![Go version](https://img.shields.io/github/go-mod/go-version/cplieger/urlform)](https://github.com/cplieger/urlform/blob/main/go.mod) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/urlform/badges/mutation.json)](https://github.com/cplieger/urlform/issues?q=label%3Agremlins-tracker)
 
 urlform tells your Go code which host a browser opens for an untrusted URL, or that it cannot vouch for one, before you publish or match the link.
